@@ -70,7 +70,6 @@ caw_load_env_file() {
 
     local line key value
     while IFS= read -r line || [[ -n "${line}" ]]; do
-        # 앞뒤 공백 제거 및 주석/빈 줄 무시
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
         if [[ -z "${line}" || "${line}" == \#* ]]; then
@@ -102,7 +101,7 @@ caw_load_env_file() {
     done < "${env_file}"
 }
 
-# .env 에 미선언(빈 값)된 사용자·경로·세션 설정을 현재 실행 계정 기준으로 동적 치환하는 함수
+# .env 에 미선언(빈 값)된 사용자·경로·세션·멀티플렉서 설정을 현재 실행 계정 기준으로 동적 치환하는 함수
 caw_resolve_runtime_defaults() {
     PUID="${PUID:-$(id -u)}"
     PGID="${PGID:-$(id -g)}"
@@ -110,11 +109,25 @@ caw_resolve_runtime_defaults() {
     HOST_HOME="$(caw_validate_path "${HOST_HOME:-${HOME}}")"
     CAW_CONFIG_DIR="$(caw_validate_path "${CAW_CONFIG_DIR:-${HOST_HOME}/.local/share/caw/code-server-config}")"
     CAW_WORKSPACE_DIR="$(caw_validate_path "${CAW_WORKSPACE_DIR:-${HOST_HOME}/workspace}")"
-    CAW_ZELLIJ_SOCKET_DIR="$(caw_validate_path "${CAW_ZELLIJ_SOCKET_DIR:-${HOST_HOME}/.cache/zellij/ipc}" "${HOST_HOME}")"
+
+    # 하위 호환: 구 CAW_ZELLIJ_SOCKET_DIR 만 정의된 경우 상위 경로로 수용하되 기본은 CAW_MUX_SOCKET_DIR 사용
+    local default_mux_dir="${CAW_MUX_SOCKET_DIR:-${HOST_HOME}/.cache/caw/mux}"
+    CAW_MUX_SOCKET_DIR="$(caw_validate_path "${default_mux_dir}" "${HOST_HOME}")"
+
+    CAW_MULTIPLEXER="${CAW_MULTIPLEXER:-auto}"
+    case "${CAW_MULTIPLEXER}" in
+        auto|zellij|tmux|none) ;;
+        *)
+            caw_err "유효하지 않은 CAW_MULTIPLEXER 값입니다 (auto | zellij | tmux | none 허용): ${CAW_MULTIPLEXER}"
+            return 1
+            ;;
+    esac
+
     CAW_SESSION_NAME="${CAW_SESSION_NAME:-caw}"
     CAW_CONTAINER_NAME="${CAW_CONTAINER_NAME:-code-server}"
 
-    export PUID PGID HOST_USER HOST_HOME CAW_CONFIG_DIR CAW_WORKSPACE_DIR CAW_ZELLIJ_SOCKET_DIR CAW_SESSION_NAME CAW_CONTAINER_NAME
+    export PUID PGID HOST_USER HOST_HOME CAW_CONFIG_DIR CAW_WORKSPACE_DIR \
+           CAW_MUX_SOCKET_DIR CAW_MULTIPLEXER CAW_SESSION_NAME CAW_CONTAINER_NAME
 }
 
 # 인증 시크릿 유효성 검증 (기본 예시값이나 빈 비밀번호 기동 원천 차단 - Fail Close)
@@ -136,7 +149,6 @@ caw_verify_secrets() {
 }
 
 # 활성 에이전트 대화 잠금(.lock) 점유 여부 확인 함수
-# 점유 중인 에이전트가 있으면 0이 아닌 코드를 반환하여 작업 중 강제 교체를 차단함
 caw_check_no_active_locks() {
     local host_home="${1:-${HOME}}"
     local lock_found=0
@@ -170,7 +182,6 @@ caw_build_compose_args() {
     local stack_root="${1:?패키지 루트 경로 필요}"
     CAW_COMPOSE_ARGS=(-f "${stack_root}/docker-compose.yml")
 
-    # 표준 로컬 오버라이드 파일이 존재할 경우 명시적 -f 사용 시에도 누락되지 않도록 자동 포함
     if [[ -f "${stack_root}/compose.override.yml" ]]; then
         CAW_COMPOSE_ARGS+=(-f "${stack_root}/compose.override.yml")
     elif [[ -f "${stack_root}/docker-compose.override.yml" ]]; then

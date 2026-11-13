@@ -101,6 +101,7 @@ restore_cli_link() {
 
 restore_cli_link "agy" "${CAW_STATE_AGY_BACKED_UP:-0}"
 restore_cli_link "zellij" "${CAW_STATE_ZELLIJ_BACKED_UP:-0}"
+restore_cli_link "tmux" "${CAW_STATE_TMUX_BACKED_UP:-0}"
 restore_cli_link "caw" "0"
 
 # 3. 기존 운영 컨테이너(*-caw-backup) 이름 복원 및 재기동

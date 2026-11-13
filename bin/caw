@@ -2,10 +2,10 @@
 # =============================================================================
 # CAW (Continuous AI Workspace) 통합 세션 관리 CLI (bin/caw)
 # 목적:
-#   - attach : 내장 터미널과 외부 SSH 간 동일한 멀티플렉서 세션(기본 caw) 연결
-#   - status : 실행 중인 AI 에이전트 메모리/경과시간, 멀티플렉서 세션, 대화 락(.lock) 조회
+#   - attach : 선택된 단일 멀티플렉서(zellij 또는 tmux) 공유 세션 연결 (기본 caw)
+#   - status : 실행 중인 AI 에이전트/멀티플렉서 자원 현황 및 대화 락(.lock) 조회
 #   - unlock : 브라우저 종료 후 유휴 code-server 허브(agy --hub)가 잡고 있는 대화 락 해제
-#   - clean  : 종료된(EXITED) 멀티플렉서 잔여 세션 정리 및 유휴 프로세스 점검
+#   - clean  : 종료된(EXITED) 멀티플렉서 잔여 세션 캐시 정리
 #   - doctor : 저장소 심볼릭 링크, 소켓 권한(0700), Linger 설정 등 환경 무결성 검증
 # =============================================================================
 set -euo pipefail
@@ -15,18 +15,19 @@ SCRIPT_DIR="$(cd "$(dirname "${SELF_REAL}")" && pwd)"
 STACK_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HOST_HOME_DIR="${CAW_HOST_HOME:-${HOME}}"
 DEFAULT_SESSION="${CAW_SESSION_NAME:-caw}"
-SOCKET_DIR="${ZELLIJ_SOCKET_DIR:-${CAW_ZELLIJ_SOCKET_DIR:-${HOST_HOME_DIR}/.cache/zellij/ipc}}"
+MUX_ROOT="${CAW_MUX_SOCKET_DIR:-${HOST_HOME_DIR}/.cache/caw/mux}"
 
-CAW_VERSION="0.1.1-261113"
+CAW_VERSION="0.1.2-261113"
 if [[ -f "${STACK_ROOT}/VERSION" ]]; then
     CAW_VERSION="$(tr -d '[:space:]' < "${STACK_ROOT}/VERSION")"
+elif [[ -f "/opt/caw/bin/../VERSION" ]]; then
+    CAW_VERSION="$(tr -d '[:space:]' < "/opt/caw/bin/../VERSION")"
 fi
 
 log_info() { printf '[CAW][INFO] %s\n' "$*"; }
 log_warn() { printf '[CAW][WARN] %s\n' "$*" >&2; }
 log_err()  { printf '[CAW][ERROR] %s\n' "$*" >&2; }
 
-# 세션 이름 입력값 검증 (옵션 주입 및 경로 이탈 원천 차단)
 validate_session_name() {
     local name="${1:-}"
     if [[ ! "${name}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
@@ -35,34 +36,72 @@ validate_session_name() {
     fi
 }
 
-# 1. 멀티플렉서 세션 연결 (기본: zellij attach -c caw)
+# 확정된 단일 멀티플렉서 모드(zellij | tmux | none)를 판별하는 함수
+resolve_active_mux() {
+    local mux="${CAW_MULTIPLEXER:-}"
+    local state_file
+    for state_file in "/opt/caw/host-bin/active-mux" "${STACK_ROOT}/.caw-state/host-bin/active-mux"; do
+        if [[ -z "${mux}" || "${mux}" == "auto" ]]; then
+            if [[ -f "${state_file}" ]]; then
+                mux="$(tr -d '[:space:]' < "${state_file}")"
+                break
+            fi
+        fi
+    done
+
+    mux="${mux:-auto}"
+    if [[ "${mux}" == "auto" ]]; then
+        if command -v tmux >/dev/null 2>&1; then
+            mux="tmux"
+        elif command -v zellij >/dev/null 2>&1; then
+            mux="zellij"
+        else
+            mux="none"
+        fi
+    fi
+
+    printf '%s\n' "${mux}"
+}
+
+# 1. 선택된 멀티플렉서 단일 공유 세션 연결
 cmd_attach() {
     local session_name="${1:-${DEFAULT_SESSION}}"
     validate_session_name "${session_name}"
 
-    export ZELLIJ_SOCKET_DIR="${SOCKET_DIR}"
-    mkdir -p "${ZELLIJ_SOCKET_DIR}"
-    chmod 700 "${ZELLIJ_SOCKET_DIR}" 2>/dev/null || true
+    local active_mux
+    active_mux="$(resolve_active_mux)"
 
-    if command -v zellij >/dev/null 2>&1; then
-        log_info "Zellij 공유 세션 연결: ${session_name} (소켓: ${ZELLIJ_SOCKET_DIR})"
-        exec zellij attach -c "${session_name}"
-    elif command -v tmux >/dev/null 2>&1; then
-        log_info "zellij 미설치 환경 감지 - tmux 대체 세션 연결: ${session_name}"
-        exec tmux new-session -A -s "${session_name}"
-    else
-        log_err "실행 가능한 터미널 멀티플렉서(zellij 또는 tmux)가 설치되어 있지 않습니다."
-        return 1
-    fi
+    case "${active_mux}" in
+        zellij)
+            export ZELLIJ_SOCKET_DIR="${ZELLIJ_SOCKET_DIR:-${MUX_ROOT}/zellij}"
+            mkdir -p "${ZELLIJ_SOCKET_DIR}"
+            chmod 700 "${MUX_ROOT}" "${ZELLIJ_SOCKET_DIR}" 2>/dev/null || true
+            log_info "Zellij 공유 세션 연결: ${session_name} (소켓: ${ZELLIJ_SOCKET_DIR})"
+            exec zellij attach -c "${session_name}"
+            ;;
+        tmux)
+            export TMUX_TMPDIR="${TMUX_TMPDIR:-${MUX_ROOT}/tmux}"
+            mkdir -p "${TMUX_TMPDIR}"
+            chmod 700 "${MUX_ROOT}" "${TMUX_TMPDIR}" 2>/dev/null || true
+            log_info "tmux 공유 세션 연결: ${session_name} (소켓: ${TMUX_TMPDIR})"
+            exec tmux new-session -A -s "${session_name}"
+            ;;
+        none|*)
+            log_err "활성화된 터미널 멀티플렉서가 없습니다 (현재 모드: ${active_mux})."
+            log_info "호스트에 tmux 또는 zellij를 설치한 뒤 scripts/install.sh 를 실행하세요."
+            return 1
+            ;;
+    esac
 }
 
 # 2. 활성 에이전트 프로세스, 멀티플렉서 세션, SQLite 대화 잠금(.lock) 상태 조회
 cmd_status() {
-    export ZELLIJ_SOCKET_DIR="${SOCKET_DIR}"
+    local active_mux
+    active_mux="$(resolve_active_mux)"
 
     printf '=== [1] AI 에이전트 및 멀티플렉서 프로세스 현황 ===\n'
     ps -eo pid,etimes,rss,args --no-headers 2>/dev/null | awk '
-        /([/ ]agy([ ]|$)|[/ ]claude([ ]|$)|[/ ]zellij([ ]|$))/ && !/awk/ && !/caw status/ {
+        /([/ ]agy([ ]|$)|[/ ]claude([ ]|$)|[/ ]zellij([ ]|$)|[/ ]tmux([ ]|$))/ && !/awk/ && !/caw status/ {
             mb = $3 / 1024.0
             mins = int($2 / 60)
             cmd = ""
@@ -71,18 +110,32 @@ cmd_status() {
             found = 1
         }
         END {
-            if (!found) print "  (현재 실행 중인 agy / claude / zellij 프로세스 없음)"
+            if (!found) print "  (현재 실행 중인 agy / claude / zellij / tmux 프로세스 없음)"
         }
     '
 
-    printf '\n=== [2] 멀티플렉서 세션 목록 (소켓: %s) ===\n' "${ZELLIJ_SOCKET_DIR}"
-    if command -v zellij >/dev/null 2>&1 && [[ -d "${ZELLIJ_SOCKET_DIR}" ]]; then
-        zellij list-sessions 2>/dev/null || printf '  (활성 Zellij 세션 없음)\n'
-    elif command -v tmux >/dev/null 2>&1; then
-        tmux list-sessions 2>/dev/null || printf '  (활성 tmux 세션 없음)\n'
-    else
-        printf '  (멀티플렉서 미감지)\n'
-    fi
+    printf '\n=== [2] 멀티플렉서 세션 목록 (활성 모드: %s) ===\n' "${active_mux}"
+    case "${active_mux}" in
+        zellij)
+            export ZELLIJ_SOCKET_DIR="${ZELLIJ_SOCKET_DIR:-${MUX_ROOT}/zellij}"
+            if command -v zellij >/dev/null 2>&1 && [[ -d "${ZELLIJ_SOCKET_DIR}" ]]; then
+                zellij list-sessions 2>/dev/null || printf '  (활성 Zellij 세션 없음)\n'
+            else
+                printf '  (활성 Zellij 세션 없음)\n'
+            fi
+            ;;
+        tmux)
+            export TMUX_TMPDIR="${TMUX_TMPDIR:-${MUX_ROOT}/tmux}"
+            if command -v tmux >/dev/null 2>&1 && [[ -d "${TMUX_TMPDIR}" ]]; then
+                tmux list-sessions 2>/dev/null || printf '  (활성 tmux 세션 없음)\n'
+            else
+                printf '  (활성 tmux 세션 없음)\n'
+            fi
+            ;;
+        *)
+            printf '  (멀티플렉서 비활성/none 모드)\n'
+            ;;
+    esac
 
     printf '\n=== [3] Antigravity 통합 저장소 대화 잠금(.lock) 점유 현황 ===\n'
     local presence_dir="${HOST_HOME_DIR}/.gemini/antigravity/presence"
@@ -128,32 +181,39 @@ cmd_unlock() {
     log_info "잠금 반환 요청 완료. 'caw status' 명령으로 해제 여부를 확인하세요."
 }
 
-# 4. 종료된(EXITED) 멀티플렉서 세션 캐시 정리
+# 4. 종료된(EXITED) 멀티플렉서 세션 캐시 정리 (활성 세션은 보존)
 cmd_clean() {
     local stop_claude=0
     if [[ "${1:-}" == "--stop-claude" ]]; then
         stop_claude=1
     fi
 
-    export ZELLIJ_SOCKET_DIR="${SOCKET_DIR}"
-    if command -v zellij >/dev/null 2>&1 && [[ -d "${ZELLIJ_SOCKET_DIR}" ]]; then
-        local exited_sessions=()
-        while IFS= read -r line; do
-            if [[ "${line}" == *"EXITED"* ]]; then
-                local sname="${line%% *}"
-                [[ -n "${sname}" ]] && exited_sessions+=("${sname}")
-            fi
-        done < <(zellij list-sessions -n 2>/dev/null || true)
+    local active_mux
+    active_mux="$(resolve_active_mux)"
 
-        if [[ "${#exited_sessions[@]}" -gt 0 ]]; then
-            local target
-            for target in "${exited_sessions[@]}"; do
-                log_info "종료된(EXITED) Zellij 세션 정리: ${target}"
-                zellij delete-session "${target}" >/dev/null 2>&1 || true
-            done
-        else
-            log_info "정리할 EXITED 상태의 Zellij 세션이 없습니다 (활성 세션은 보존됨)."
+    if [[ "${active_mux}" == "zellij" ]] && command -v zellij >/dev/null 2>&1; then
+        export ZELLIJ_SOCKET_DIR="${ZELLIJ_SOCKET_DIR:-${MUX_ROOT}/zellij}"
+        if [[ -d "${ZELLIJ_SOCKET_DIR}" ]]; then
+            local exited_sessions=()
+            while IFS= read -r line; do
+                if [[ "${line}" == *"EXITED"* ]]; then
+                    local sname="${line%% *}"
+                    [[ -n "${sname}" ]] && exited_sessions+=("${sname}")
+                fi
+            done < <(zellij list-sessions -n 2>/dev/null || true)
+
+            if [[ "${#exited_sessions[@]}" -gt 0 ]]; then
+                local target
+                for target in "${exited_sessions[@]}"; do
+                    log_info "종료된(EXITED) Zellij 세션 정리: ${target}"
+                    zellij delete-session "${target}" >/dev/null 2>&1 || true
+                done
+            else
+                log_info "정리할 EXITED 상태의 Zellij 세션이 없습니다 (활성 세션은 보존됨)."
+            fi
         fi
+    elif [[ "${active_mux}" == "tmux" ]]; then
+        log_info "tmux 모드에서는 종료된 세션이 자동 소멸되며 활성 세션만 보존됩니다."
     fi
 
     if [[ "${stop_claude}" -eq 1 ]] && command -v claude >/dev/null 2>&1; then
@@ -165,43 +225,55 @@ cmd_clean() {
 # 5. 환경 정합성 및 보안 권한 자가 진단 (실패 항목 존재 시 0이 아닌 종료 코드 반환)
 cmd_doctor() {
     local failures=0
-    printf '=== CAW 환경 자가 진단 (버전: %s) ===\n' "${CAW_VERSION}"
+    local active_mux
+    active_mux="$(resolve_active_mux)"
+    printf '=== CAW 환경 자가 진단 (버전: %s, 멀티플렉서 모드: %s) ===\n' "${CAW_VERSION}" "${active_mux}"
 
-    # (1) Zellij 소켓 디렉토리 및 권한 점검
-    if [[ -d "${SOCKET_DIR}" ]]; then
+    # (1) 공유 소켓 디렉토리 권한(0700) 점검
+    if [[ -d "${MUX_ROOT}" ]]; then
         local perm
-        perm="$(stat -c '%a' "${SOCKET_DIR}" 2>/dev/null || echo 'unknown')"
+        perm="$(stat -c '%a' "${MUX_ROOT}" 2>/dev/null || echo 'unknown')"
         if [[ "${perm}" == "700" ]]; then
-            printf '  [PASS] 공유 소켓 디렉토리 권한 정상 (700): %s\n' "${SOCKET_DIR}"
+            printf '  [PASS] 공유 소켓 상위 디렉토리 권한 정상 (700): %s\n' "${MUX_ROOT}"
         else
-            printf '  [FAIL] 공유 소켓 디렉토리 권한 부적절 (%s != 700): %s\n' "${perm}" "${SOCKET_DIR}"
+            printf '  [FAIL] 공유 소켓 상위 디렉토리 권한 부적절 (%s != 700): %s\n' "${perm}" "${MUX_ROOT}"
             failures=$((failures + 1))
         fi
     else
-        printf '  [WARN] 공유 소켓 디렉토리 아직 미생성 (첫 attach 시 생성됨): %s\n' "${SOCKET_DIR}"
+        printf '  [WARN] 공유 소켓 디렉토리 아직 미생성 (첫 attach 또는 install.sh 실행 시 생성): %s\n' "${MUX_ROOT}"
     fi
 
-    # (2) Antigravity 통합 저장소 인증/설정 파일 점검
-    local ide_dir="${HOST_HOME_DIR}/.gemini/antigravity"
-    local token_file="${ide_dir}/antigravity-oauth-token"
+    # (2) Antigravity 통합 저장소 인증 파일 점검
+    local token_file="${HOST_HOME_DIR}/.gemini/antigravity/antigravity-oauth-token"
     if [[ -e "${token_file}" ]]; then
         printf '  [PASS] Antigravity 통합 인증 토큰 확인됨: %s\n' "${token_file}"
     else
         printf '  [WARN] 통합 인증 토큰 미확인 (로그인 전이거나 install.sh 실행 필요): %s\n' "${token_file}"
     fi
 
-    # (3) 핵심 CLI 도구 가용성 점검
+    # (3) 핵심 CLI 도구 및 선택된 단일 멀티플렉서 점검
     local tool
-    for tool in agy claude zellij; do
+    for tool in agy claude; do
         if command -v "${tool}" >/dev/null 2>&1; then
-            printf '  [PASS] CLI 명령 감지됨 (%s): %s\n' "${tool}" "$(command -v "${tool}")"
+            printf '  [PASS] 에이전트 CLI 감지됨 (%s): %s\n' "${tool}" "$(command -v "${tool}")"
         else
-            printf '  [WARN] CLI 명령 미감지 (%s)\n' "${tool}"
+            printf '  [WARN] 에이전트 CLI 미감지 (%s)\n' "${tool}"
         fi
     done
 
-    # (4) 호스트 systemd Linger 점검 (컨테이너 외부 호스트에서 실행될 때만 검사)
-    if [[ ! -f "/.dockerenv" ]] && command -v loginctl >/dev/null 2>&1; then
+    if [[ "${active_mux}" == "zellij" || "${active_mux}" == "tmux" ]]; then
+        if command -v "${active_mux}" >/dev/null 2>&1; then
+            printf '  [PASS] 선택된 멀티플렉서 감지됨 (%s): %s\n' "${active_mux}" "$(command -v "${active_mux}")"
+        else
+            printf '  [FAIL] 선택된 멀티플렉서(%s) 실행 파일을 찾을 수 없음\n' "${active_mux}"
+            failures=$((failures + 1))
+        fi
+    else
+        printf '  [INFO] 멀티플렉서 비활성(none) 모드\n'
+    fi
+
+    # (4) 호스트 systemd Linger 점검 (멀티플렉서 사용 시 필수)
+    if [[ ! -f "/.dockerenv" ]] && [[ "${active_mux}" != "none" ]] && command -v loginctl >/dev/null 2>&1; then
         local linger_state
         linger_state="$(loginctl show-user "${USER:-$(id -un)}" -p Linger --value 2>/dev/null || echo 'unknown')"
         if [[ "${linger_state}" == "yes" ]]; then
@@ -225,8 +297,8 @@ cmd_help() {
 CAW (Continuous AI Workspace) CLI v${CAW_VERSION}
 
 사용법:
-  caw attach [세션명]        공유 멀티플렉서 세션 연결 또는 생성 (기본값: ${DEFAULT_SESSION})
-  caw status                에이전트 메모리/경과시간, 멀티플렉서 세션, 대화 락(.lock) 조회
+  caw attach [세션명]        선택된 멀티플렉서(zellij/tmux) 공유 세션 연결 (기본값: ${DEFAULT_SESSION})
+  caw status                에이전트·멀티플렉서 자원 현황 및 대화 락(.lock) 조회
   caw unlock [--dry-run]    유휴 code-server 허브(agy --hub)의 대화 잠금 안전 반환
   caw clean [--stop-claude] 종료된(EXITED) 멀티플렉서 세션 캐시 정리
   caw doctor                소켓 권한, 통합 저장소 링크, systemd Linger 설정 점검
@@ -239,13 +311,13 @@ SUBCMD="${1:-help}"
 shift || true
 
 case "${SUBCMD}" in
-    attach)             cmd_attach "$@" ;;
-    status)             cmd_status "$@" ;;
-    unlock)             cmd_unlock "$@" ;;
-    clean)              cmd_clean "$@" ;;
-    doctor)             cmd_doctor "$@" ;;
+    attach)               cmd_attach "$@" ;;
+    status)               cmd_status "$@" ;;
+    unlock)               cmd_unlock "$@" ;;
+    clean)                cmd_clean "$@" ;;
+    doctor)               cmd_doctor "$@" ;;
     version|--version|-v) printf '%s\n' "${CAW_VERSION}" ;;
-    help|--help|-h)     cmd_help ;;
+    help|--help|-h)       cmd_help ;;
     *)
         log_err "알 수 없는 하위 명령입니다: ${SUBCMD}"
         cmd_help >&2

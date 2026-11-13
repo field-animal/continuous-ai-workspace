@@ -12,11 +12,11 @@ SELF_REAL="$(realpath "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${SELF_REAL}")" && pwd)"
 STACK_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HOST_HOME_DIR="${CAW_HOST_HOME:-${HOME}}"
+MUX_ROOT="${CAW_MUX_SOCKET_DIR:-${HOST_HOME_DIR}/.cache/caw/mux}"
 
-# 공유 소켓 디렉토리 경로 고정 및 최소 권한(0700) 보장
-export ZELLIJ_SOCKET_DIR="${ZELLIJ_SOCKET_DIR:-${CAW_ZELLIJ_SOCKET_DIR:-${HOST_HOME_DIR}/.cache/zellij/ipc}}"
+export ZELLIJ_SOCKET_DIR="${ZELLIJ_SOCKET_DIR:-${MUX_ROOT}/zellij}"
 mkdir -p "${ZELLIJ_SOCKET_DIR}"
-chmod 700 "${ZELLIJ_SOCKET_DIR}" 2>/dev/null || true
+chmod 700 "${MUX_ROOT}" "${ZELLIJ_SOCKET_DIR}" 2>/dev/null || true
 
 resolve_real_zellij() {
     local candidate candidate_real
@@ -57,7 +57,7 @@ resolve_real_zellij() {
 REAL_ZELLIJ="$(resolve_real_zellij || true)"
 if [[ -z "${REAL_ZELLIJ}" ]]; then
     echo "[CAW][ERROR] 실행 가능한 zellij 본체 바이너리를 찾을 수 없습니다." >&2
-    echo "[CAW][INFO] 호스트에 zellij를 설치한 뒤 scripts/install.sh 를 다시 실행하거나 다른 멀티플렉서를 사용하세요." >&2
+    echo "[CAW][INFO] scripts/install.sh 를 실행하여 멀티플렉서를 연동하세요." >&2
     exit 1
 fi
 

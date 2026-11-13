@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# =============================================================================
+# CAW 공용 래퍼 - tmux 멀티플렉서 (bin/tmux)
+# 목적:
+#   1) 외부 SSH와 code-server 내장 터미널 어디서 `tmux` 명령을 직접 실행하더라도
+#      동일한 공유 소켓 디렉토리(TMUX_TMPDIR)를 바라보도록 강제하여 단일 세션 공유 보장
+#   2) 소켓 디렉토리 권한을 항상 소유자 전용(0700)으로 강제하여 다중 계정 노출 차단
+# =============================================================================
+set -euo pipefail
+
+SELF_REAL="$(realpath "${BASH_SOURCE[0]}")"
+HOST_HOME_DIR="${CAW_HOST_HOME:-${HOME}}"
+MUX_ROOT="${CAW_MUX_SOCKET_DIR:-${HOST_HOME_DIR}/.cache/caw/mux}"
+
+export TMUX_TMPDIR="${TMUX_TMPDIR:-${MUX_ROOT}/tmux}"
+mkdir -p "${TMUX_TMPDIR}"
+chmod 700 "${MUX_ROOT}" "${TMUX_TMPDIR}" 2>/dev/null || true
+
+resolve_real_tmux() {
+    local candidate candidate_real
+    local candidates=(
+        "${HOST_HOME_DIR}/.local/bin/tmux.standalone"
+        "/usr/bin/tmux"
+        "/usr/local/bin/tmux"
+    )
+
+    for candidate in "${candidates[@]}"; do
+        if [[ -x "${candidate}" ]]; then
+            candidate_real="$(realpath "${candidate}" 2>/dev/null || true)"
+            if [[ -n "${candidate_real}" && "${candidate_real}" != "${SELF_REAL}" ]]; then
+                printf '%s\n' "${candidate}"
+                return 0
+            fi
+        fi
+    done
+
+    local IFS=':'
+    local dir
+    for dir in ${PATH}; do
+        [[ -z "${dir}" ]] && continue
+        candidate="${dir}/tmux"
+        if [[ -x "${candidate}" ]]; then
+            candidate_real="$(realpath "${candidate}" 2>/dev/null || true)"
+            if [[ -n "${candidate_real}" && "${candidate_real}" != "${SELF_REAL}" ]]; then
+                printf '%s\n' "${candidate}"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
+REAL_TMUX="$(resolve_real_tmux || true)"
+if [[ -z "${REAL_TMUX}" ]]; then
+    echo "[CAW][ERROR] 실행 가능한 tmux 본체 바이너리를 찾을 수 없습니다." >&2
+    echo "[CAW][INFO] 호스트에 tmux를 설치하거나 scripts/install.sh 를 실행하세요." >&2
+    exit 1
+fi
+
+exec "${REAL_TMUX}" "$@"

@@ -14,6 +14,8 @@ STACK_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # shellcheck source=../lib/common.sh
 source "${STACK_ROOT}/lib/common.sh"
+# shellcheck source=../lib/multiplexer.sh
+source "${STACK_ROOT}/lib/multiplexer.sh"
 
 DRY_RUN=0
 ADOPT_MODE=0
@@ -100,11 +102,15 @@ if ! caw_check_no_active_locks "${HOST_HOME}"; then
     exit 1
 fi
 
-# 4. Docker Compose 인자 조립 (compose.override.yml 및 compose.dood.yml 자동 반영)
+# 4. 정책 A 기반 단일 멀티플렉서(zellij | tmux | none) 확정 및 선택 설치
+caw_select_and_prepare_mux "${STACK_ROOT}" "${HOST_HOME}" "${CAW_MULTIPLEXER}" "${DRY_RUN}"
+caw_info "확정된 단일 멀티플렉서 모드: ${CAW_RESOLVED_MUX}"
+
+# 5. Docker Compose 인자 조립 (compose.override.yml 및 compose.dood.yml 자동 반영)
 caw_build_compose_args "${STACK_ROOT}"
 caw_info "적용 대상 Compose 구성: ${CAW_COMPOSE_ARGS[*]}"
 
-# 5. 호스트 영속 디렉토리 및 초기 파일 사전 생성 (Docker 데몬의 root 소유 폴더 자동 생성 방지)
+# 6. 호스트 영속 디렉토리 및 소켓 디렉토리 사전 생성
 STATE_DIR="${STACK_ROOT}/.caw-state"
 HOST_BIN_CACHE="${STATE_DIR}/host-bin"
 MANIFEST_FILE="${STATE_DIR}/manifest.env"
@@ -115,9 +121,10 @@ REQUIRED_DIRS=(
     "${HOST_HOME}/.claude"
     "${HOST_HOME}/.gemini/antigravity"
     "${HOST_HOME}/.gemini/antigravity-cli"
+    "${CAW_MUX_SOCKET_DIR}"
     "${HOST_HOME}/.cache/zellij"
-    "${CAW_ZELLIJ_SOCKET_DIR}"
     "${HOST_HOME}/.config/zellij"
+    "${HOST_HOME}/.config/tmux"
     "${HOST_HOME}/.local/bin"
     "${HOST_BIN_CACHE}"
 )
@@ -125,13 +132,29 @@ REQUIRED_DIRS=(
 for dir in "${REQUIRED_DIRS[@]}"; do
     run_or_echo mkdir -p "${dir}"
 done
-run_or_echo chmod 700 "${CAW_ZELLIJ_SOCKET_DIR}"
+run_or_echo chmod 700 "${CAW_MUX_SOCKET_DIR}"
+
+if [[ "${CAW_RESOLVED_MUX}" == "zellij" ]]; then
+    run_or_echo mkdir -p "${CAW_MUX_SOCKET_DIR}/zellij"
+    run_or_echo chmod 700 "${CAW_MUX_SOCKET_DIR}/zellij"
+elif [[ "${CAW_RESOLVED_MUX}" == "tmux" ]]; then
+    run_or_echo mkdir -p "${CAW_MUX_SOCKET_DIR}/tmux"
+    run_or_echo chmod 700 "${CAW_MUX_SOCKET_DIR}/tmux"
+    # 호스트에 고전 ~/.tmux.conf 파일이 있을 경우 컨테이너 XDG 경로에서 읽히도록 심볼릭 링크 연결
+    if [[ -f "${HOST_HOME}/.tmux.conf" && ! -e "${HOST_HOME}/.config/tmux/tmux.conf" ]]; then
+        run_or_echo ln -s "../../.tmux.conf" "${HOST_HOME}/.config/tmux/tmux.conf"
+    fi
+fi
 
 if [[ ! -e "${HOST_HOME}/.gitconfig" ]]; then
     run_or_echo touch "${HOST_HOME}/.gitconfig"
 fi
 
-# 6. Antigravity 인증·설정 심볼릭 링크 연결 및 선택적 세션 마이그레이션
+if [[ "${DRY_RUN}" -eq 0 ]]; then
+    printf '%s\n' "${CAW_RESOLVED_MUX}" > "${HOST_BIN_CACHE}/active-mux"
+fi
+
+# 7. Antigravity 인증·설정 심볼릭 링크 연결 및 선택적 세션 마이그레이션
 for shared_file in "antigravity-oauth-token" "settings.json"; do
     src_file="${HOST_HOME}/.gemini/antigravity-cli/${shared_file}"
     dst_file="${HOST_HOME}/.gemini/antigravity/${shared_file}"
@@ -157,83 +180,82 @@ if [[ "${MIGRATE_SESSIONS}" -eq 1 ]]; then
     done
 fi
 
-# 7. 호스트 실제 zellij 바이너리 탐색 (컨테이너-호스트 프로토콜 버전 100% 일치용 로컬 캐시)
-find_non_wrapper_binary() {
+# 8. 호스트 CLI 래퍼 배치 유틸리티 (기존 바이너리 백업 및 비선택 멀티플렉서 링크 정리)
+AGY_BACKED_UP=0
+ZELLIJ_BACKED_UP=0
+TMUX_BACKED_UP=0
+LAST_LINK_BACKED_UP=0
+
+link_wrapper_with_backup() {
     local bin_name="$1"
+    local target_path="${HOST_HOME}/.local/bin/${bin_name}"
+    local wrapper_real
+    wrapper_real="$(realpath "${STACK_ROOT}/bin/${bin_name}")"
+    LAST_LINK_BACKED_UP=0
+
+    if [[ -e "${target_path}" || -L "${target_path}" ]]; then
+        local current_real
+        current_real="$(realpath -m "${target_path}" 2>/dev/null || true)"
+        if [[ "${current_real}" != "${wrapper_real}" && ! -e "${target_path}.standalone" ]]; then
+            run_or_echo mv "${target_path}" "${target_path}.standalone"
+            LAST_LINK_BACKED_UP=1
+            caw_info "기존 ${bin_name} 실행 파일 백업 완료: ${target_path}.standalone"
+        fi
+    fi
+    run_or_echo ln -snf "${STACK_ROOT}/bin/${bin_name}" "${target_path}"
+}
+
+unlink_wrapper_if_ours() {
+    local bin_name="$1"
+    local target_path="${HOST_HOME}/.local/bin/${bin_name}"
     local wrapper_real
     wrapper_real="$(realpath -m "${STACK_ROOT}/bin/${bin_name}")"
 
-    if [[ -x "${HOST_HOME}/.local/bin/${bin_name}.standalone" ]]; then
-        realpath "${HOST_HOME}/.local/bin/${bin_name}.standalone"
-        return 0
-    fi
-
-    local IFS=':'
-    local d cand cand_real
-    for d in ${PATH} "${HOST_HOME}/.local/bin" "${HOST_HOME}/.cargo/bin" "/usr/local/bin" "/usr/bin"; do
-        [[ -z "${d}" ]] && continue
-        cand="${d}/${bin_name}"
-        if [[ -x "${cand}" ]]; then
-            cand_real="$(realpath "${cand}" 2>/dev/null || true)"
-            if [[ -n "${cand_real}" && "${cand_real}" != "${wrapper_real}" ]]; then
-                printf '%s\n' "${cand_real}"
-                return 0
+    if [[ -L "${target_path}" ]]; then
+        local current_real
+        current_real="$(realpath -m "${target_path}" 2>/dev/null || true)"
+        if [[ "${current_real}" == "${wrapper_real}" ]]; then
+            run_or_echo rm -f "${target_path}"
+            if [[ -e "${target_path}.standalone" ]]; then
+                run_or_echo mv "${target_path}.standalone" "${target_path}"
             fi
         fi
-    done
-    return 1
+    fi
 }
 
-AGY_BACKED_UP=0
-ZELLIJ_BACKED_UP=0
-SYMLINK_ZELLIJ=0
+# agy 및 caw 공용 래퍼 연결
+link_wrapper_with_backup "agy"
+AGY_BACKED_UP="${LAST_LINK_BACKED_UP}"
+run_or_echo ln -snf "${STACK_ROOT}/bin/caw" "${HOST_HOME}/.local/bin/caw"
 
-# agy 래퍼 심볼릭 링크 배치 (기존 스탠드얼론 파일 존재 시 백업 보존)
-TARGET_LOCAL_AGY="${HOST_HOME}/.local/bin/agy"
-WRAPPER_AGY_REAL="$(realpath "${STACK_ROOT}/bin/agy")"
-if [[ -e "${TARGET_LOCAL_AGY}" || -L "${TARGET_LOCAL_AGY}" ]]; then
-    CURRENT_AGY_REAL="$(realpath -m "${TARGET_LOCAL_AGY}" 2>/dev/null || true)"
-    if [[ "${CURRENT_AGY_REAL}" != "${WRAPPER_AGY_REAL}" && ! -e "${TARGET_LOCAL_AGY}.standalone" ]]; then
-        run_or_echo mv "${TARGET_LOCAL_AGY}" "${TARGET_LOCAL_AGY}.standalone"
-        AGY_BACKED_UP=1
-        caw_info "기존 agy 실행 파일 백업 완료: ${TARGET_LOCAL_AGY}.standalone"
-    fi
-fi
-run_or_echo ln -snf "${STACK_ROOT}/bin/agy" "${TARGET_LOCAL_AGY}"
-
-# caw 통합 CLI 심볼릭 링크 배치
-TARGET_LOCAL_CAW="${HOST_HOME}/.local/bin/caw"
-run_or_echo ln -snf "${STACK_ROOT}/bin/caw" "${TARGET_LOCAL_CAW}"
-
-# zellij 바이너리 동기화 및 소켓 고정 래퍼 배치 (설치된 경우에만 수행 - 멀티플렉서 중립성 유지)
-REAL_HOST_ZELLIJ="$(find_non_wrapper_binary zellij || true)"
-if [[ -n "${REAL_HOST_ZELLIJ}" ]]; then
-    run_or_echo cp -pf "${REAL_HOST_ZELLIJ}" "${HOST_BIN_CACHE}/zellij"
-    TARGET_LOCAL_ZELLIJ="${HOST_HOME}/.local/bin/zellij"
-    WRAPPER_ZELLIJ_REAL="$(realpath "${STACK_ROOT}/bin/zellij")"
-    if [[ -e "${TARGET_LOCAL_ZELLIJ}" || -L "${TARGET_LOCAL_ZELLIJ}" ]]; then
-        CURRENT_ZELLIJ_REAL="$(realpath -m "${TARGET_LOCAL_ZELLIJ}" 2>/dev/null || true)"
-        if [[ "${CURRENT_ZELLIJ_REAL}" != "${WRAPPER_ZELLIJ_REAL}" && ! -e "${TARGET_LOCAL_ZELLIJ}.standalone" ]]; then
-            run_or_echo mv "${TARGET_LOCAL_ZELLIJ}" "${TARGET_LOCAL_ZELLIJ}.standalone"
-            ZELLIJ_BACKED_UP=1
-            caw_info "기존 zellij 실행 파일 백업 완료: ${TARGET_LOCAL_ZELLIJ}.standalone"
+# 선택된 단 1종의 멀티플렉서 래퍼만 연결하고 비선택 래퍼는 제거
+case "${CAW_RESOLVED_MUX}" in
+    zellij)
+        unlink_wrapper_if_ours "tmux"
+        REAL_HOST_ZELLIJ="$(caw_find_real_binary "${STACK_ROOT}" "${HOST_HOME}" "zellij" || true)"
+        if [[ -n "${REAL_HOST_ZELLIJ}" ]]; then
+            run_or_echo cp -pf "${REAL_HOST_ZELLIJ}" "${HOST_BIN_CACHE}/zellij"
         fi
-    fi
-    run_or_echo ln -snf "${STACK_ROOT}/bin/zellij" "${TARGET_LOCAL_ZELLIJ}"
-    SYMLINK_ZELLIJ=1
-    caw_info "호스트-컨테이너 동일 버전 zellij 동기화 및 소켓 래퍼 연결 완료: ${REAL_HOST_ZELLIJ}"
-else
-    caw_warn "호스트에서 zellij가 감지되지 않았습니다. zellij 사용 시 설치 후 install.sh를 다시 실행하세요."
-fi
+        link_wrapper_with_backup "zellij"
+        ZELLIJ_BACKED_UP="${LAST_LINK_BACKED_UP}"
+        ;;
+    tmux)
+        unlink_wrapper_if_ours "zellij"
+        link_wrapper_with_backup "tmux"
+        TMUX_BACKED_UP="${LAST_LINK_BACKED_UP}"
+        ;;
+    none|*)
+        unlink_wrapper_if_ours "zellij"
+        unlink_wrapper_if_ours "tmux"
+        ;;
+esac
 
-# 공식 스탠드얼론 claude CLI 설치 여부 안내 점검
-if ! find_non_wrapper_binary claude >/dev/null 2>&1; then
+if ! caw_find_real_binary "${STACK_ROOT}" "${HOST_HOME}" "claude" >/dev/null 2>&1; then
     caw_warn "호스트 스탠드얼론 claude CLI(${HOST_HOME}/.local/bin/claude)가 감지되지 않았습니다."
-    caw_info "터미널에서 claude CLI 사용이 필요하면 공식 스탠드얼론 설치 후 사용하세요."
 fi
 
-# 8. 호스트 systemd Linger(SSH 로그아웃 후 멀티플렉서 세션 생존 보장) 점검
-if command -v loginctl >/dev/null 2>&1; then
+# 9. 호스트 systemd Linger 점검 (멀티플렉서 활성 모드일 때만 수행)
+if [[ "${CAW_RESOLVED_MUX}" != "none" ]] && command -v loginctl >/dev/null 2>&1; then
     LINGER_VAL="$(loginctl show-user "${HOST_USER}" -p Linger --value 2>/dev/null || echo 'no')"
     if [[ "${LINGER_VAL}" != "yes" ]]; then
         if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -247,7 +269,7 @@ if command -v loginctl >/dev/null 2>&1; then
     fi
 fi
 
-# 9. 기존 동일 이름 컨테이너 충돌 검사 및 --adopt 백업 전환 처리
+# 10. 기존 동일 이름 컨테이너 충돌 검사 및 --adopt 백업 전환 처리
 BACKUP_CONTAINER=""
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     if docker container inspect "${CAW_CONTAINER_NAME}" >/dev/null 2>&1; then
@@ -272,12 +294,13 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
         fi
     fi
 
-    # 10. 롤백 매니페스트 기록 (기존 상태가 없을 때만 최초 백업 원형을 보존하거나 갱신)
+    # 11. 롤백 매니페스트 기록
     if [[ "${DRY_RUN}" -eq 0 ]]; then
         if [[ -f "${MANIFEST_FILE}" ]]; then
             caw_load_env_file "${MANIFEST_FILE}" || true
             [[ "${CAW_STATE_AGY_BACKED_UP:-0}" == "1" ]] && AGY_BACKED_UP=1
             [[ "${CAW_STATE_ZELLIJ_BACKED_UP:-0}" == "1" ]] && ZELLIJ_BACKED_UP=1
+            [[ "${CAW_STATE_TMUX_BACKED_UP:-0}" == "1" ]] && TMUX_BACKED_UP=1
             [[ -z "${BACKUP_CONTAINER}" && -n "${CAW_STATE_BACKUP_CONTAINER:-}" ]] && BACKUP_CONTAINER="${CAW_STATE_BACKUP_CONTAINER}"
         fi
 
@@ -286,16 +309,15 @@ CAW_STATE_CREATED_AT="$(date +%Y-%m-%dT%H:%M:%S%z)"
 CAW_STATE_HOST_HOME="${HOST_HOME}"
 CAW_STATE_CONTAINER_NAME="${CAW_CONTAINER_NAME}"
 CAW_STATE_BACKUP_CONTAINER="${BACKUP_CONTAINER}"
+CAW_STATE_ACTIVE_MUX="${CAW_RESOLVED_MUX}"
 CAW_STATE_AGY_BACKED_UP="${AGY_BACKED_UP}"
 CAW_STATE_ZELLIJ_BACKED_UP="${ZELLIJ_BACKED_UP}"
-CAW_STATE_SYMLINK_AGY="1"
-CAW_STATE_SYMLINK_CAW="1"
-CAW_STATE_SYMLINK_ZELLIJ="${SYMLINK_ZELLIJ}"
+CAW_STATE_TMUX_BACKED_UP="${TMUX_BACKED_UP}"
 EOF
         chmod 600 "${MANIFEST_FILE}"
     fi
 
-    # 11. Compose 구문 검증 및 기동
+    # 12. Compose 구문 검증 및 기동
     docker compose "${CAW_COMPOSE_ARGS[@]}" --env-file "${ENV_FILE}" config -q
     caw_info "Docker Compose 구성 검증 통과 완료."
     run_or_echo docker compose "${CAW_COMPOSE_ARGS[@]}" --env-file "${ENV_FILE}" up -d
@@ -308,4 +330,4 @@ else
     fi
 fi
 
-caw_info "CAW 작업 완료 (DRY_RUN=${DRY_RUN}). 'caw doctor' 및 'caw attach'로 환경을 확인하세요."
+caw_info "CAW 작업 완료 (DRY_RUN=${DRY_RUN}, MUX=${CAW_RESOLVED_MUX}). 'caw doctor' 및 'caw attach'로 환경을 확인하세요."
