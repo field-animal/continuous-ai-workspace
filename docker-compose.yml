@@ -1,10 +1,10 @@
 # =============================================================================
 # CAW (Continuous AI Workspace) - 코어 컨테이너 구성 (docker-compose.yml)
-# 목적: 프록시·멀티플렉서 중립적인 code-server 구동 및 호스트-컨테이너 간 AI 세션/소켓 일치
-# 비고:
-#   - PUID, PGID, HOST_HOME, CAW_WORKSPACE_DIR 등 미선언 시 현재 실행 사용자 환경으로 자동 치환됨
-#   - 멀티플렉서는 CAW_MULTIPLEXER(auto|zellij|tmux|none)에 따라 선택된 1종만 단독 활성화됨
-#   - 복수 워크스페이스 추가 마운트는 compose.override.yml, DooD 기능은 compose.dood.yml 로 분리됨
+# 목적: 프록시·멀티플렉서 중립적인 code-server 구동 및 호스트-컨테이너 간 AI 대화 저장소 일치
+# 보안 기본 원칙:
+#   - 기본 구성은 호스트 SSH 2중 인증 경계를 유지하기 위해 멀티플렉서 유닉스 소켓을 컨테이너에 마운트하지 않음
+#   - 내장 터미널에서 호스트 SSH 로그인 후 멀티플렉서(tmux / zellij) 및 도커 제어를 수행함
+#   - 폐쇄망 등에서 소켓 직결을 원할 경우에만 아래 [선택: 소켓 직결] 주석을 해제하고 CAW_SHARE_MUX_SOCKET=true 지정
 # =============================================================================
 
 services:
@@ -24,15 +24,17 @@ services:
       - AGY_ALLOWED_DOMAINS=${CAW_BASE_DOMAIN:-}
       - ANTIGRAVITY_CDE=true
       - DEFAULT_WORKSPACE=${CAW_WORKSPACE_DIR:-${HOST_HOME:-${HOME}}/workspace}
-      # 호스트와 컨테이너 내장 터미널이 동일한 멀티플렉서(zellij 또는 tmux) 소켓을 바라보도록 고정
       - CAW_MULTIPLEXER=${CAW_MULTIPLEXER:-auto}
       - CAW_SESSION_NAME=${CAW_SESSION_NAME:-caw}
-      - CAW_MUX_SOCKET_DIR=${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}
-      - ZELLIJ_SOCKET_DIR=${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}/zellij
-      - TMUX_TMPDIR=${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}/tmux
+      - CAW_SHARE_MUX_SOCKET=${CAW_SHARE_MUX_SOCKET:-false}
       - CAW_HOST_HOME=${HOST_HOME:-${HOME}}
       - CAW_AUTO_INSTALL_EXTENSIONS=${CAW_AUTO_INSTALL_EXTENSIONS:-true}
       - CAW_ENABLE_DOOD=${CAW_ENABLE_DOOD:-false}
+      # [선택: 멀티플렉서 소켓 직결 모드용 환경변수 - 기본 비활성(호스트 SSH 2중 인증 경계 유지)]
+      # 주의: 활성화 시 호스트 SSH 인증 없이 컨테이너에서 호스트 멀티플렉서 세션 진입이 가능해짐
+      # - CAW_MUX_SOCKET_DIR=${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}
+      # - ZELLIJ_SOCKET_DIR=${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}/zellij
+      # - TMUX_TMPDIR=${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}/tmux
     # 컨테이너 내부에서 에이전트의 Linux 네임스페이스 샌드박스 실행 허용
     security_opt:
       - seccomp:unconfined
@@ -48,18 +50,18 @@ services:
       - ${HOST_HOME:-${HOME}}/.claude:${HOST_HOME:-${HOME}}/.claude
       - ${HOST_HOME:-${HOME}}/.gemini:${HOST_HOME:-${HOME}}/.gemini
 
-      # 3. 멀티플렉서(zellij / tmux) 공용 소켓 및 XDG 설정 디렉토리 공유
-      - ${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}:${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}
-      - ${HOST_HOME:-${HOME}}/.cache/zellij:/config/.cache/zellij
-      - ${HOST_HOME:-${HOME}}/.cache/zellij:${HOST_HOME:-${HOME}}/.cache/zellij
-      - ${HOST_HOME:-${HOME}}/.config/zellij:/config/.config/zellij
-      - ${HOST_HOME:-${HOME}}/.config/tmux:/config/.config/tmux
+      # 3. [선택: 멀티플렉서 소켓 직결 마운트 - 기본 비활성(호스트 SSH 2중 인증 경계 유지)]
+      # 내장 터미널에서 SSH 로그인 없이 호스트 멀티플렉서에 직결하려면 CAW_SHARE_MUX_SOCKET=true 설정과 함께 아래 주석 해제
+      # - ${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}:${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}
+      # - ${HOST_HOME:-${HOME}}/.cache/zellij:/config/.cache/zellij
+      # - ${HOST_HOME:-${HOME}}/.cache/zellij:${HOST_HOME:-${HOME}}/.cache/zellij
+      # - ${HOST_HOME:-${HOME}}/.config/zellij:/config/.config/zellij
+      # - ${HOST_HOME:-${HOME}}/.config/tmux:/config/.config/tmux
+      # - ./.caw-state/host-bin:/opt/caw/host-bin:ro
+      # - ./bin:/opt/caw/bin:ro
 
-      # 4. 호스트 로컬 바이너리 및 CAW 공용 CLI 래퍼 읽기 전용 연동
-      # 멀티플렉서 래퍼(zellij/tmux)는 선택된 1종만 40-multiplexer.sh 에서 /usr/local/bin 에 연결함
+      # 4. 호스트 로컬 바이너리 및 AI 에이전트 공용 CLI 래퍼 읽기 전용 연동 (유닉스 소켓 미포함)
       - ${HOST_HOME:-${HOME}}/.local/bin:${HOST_HOME:-${HOME}}/.local/bin:ro
-      - ./.caw-state/host-bin:/opt/caw/host-bin:ro
-      - ./bin:/opt/caw/bin:ro
       - ./bin/agy:/usr/local/bin/agy:ro
       - ./bin/claude:/usr/local/bin/claude:ro
       - ./bin/caw:/usr/local/bin/caw:ro

@@ -123,11 +123,20 @@ caw_resolve_runtime_defaults() {
             ;;
     esac
 
+    CAW_SHARE_MUX_SOCKET="${CAW_SHARE_MUX_SOCKET:-false}"
+    case "${CAW_SHARE_MUX_SOCKET}" in
+        true|false) ;;
+        *)
+            caw_err "유효하지 않은 CAW_SHARE_MUX_SOCKET 값입니다 (true | false 허용): ${CAW_SHARE_MUX_SOCKET}"
+            return 1
+            ;;
+    esac
+
     CAW_SESSION_NAME="${CAW_SESSION_NAME:-caw}"
     CAW_CONTAINER_NAME="${CAW_CONTAINER_NAME:-code-server}"
 
     export PUID PGID HOST_USER HOST_HOME CAW_CONFIG_DIR CAW_WORKSPACE_DIR \
-           CAW_MUX_SOCKET_DIR CAW_MULTIPLEXER CAW_SESSION_NAME CAW_CONTAINER_NAME
+           CAW_MUX_SOCKET_DIR CAW_MULTIPLEXER CAW_SHARE_MUX_SOCKET CAW_SESSION_NAME CAW_CONTAINER_NAME
 }
 
 # 인증 시크릿 유효성 검증 (기본 예시값이나 빈 비밀번호 기동 원천 차단 - Fail Close)

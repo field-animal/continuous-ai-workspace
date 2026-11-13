@@ -121,28 +121,35 @@ REQUIRED_DIRS=(
     "${HOST_HOME}/.claude"
     "${HOST_HOME}/.gemini/antigravity"
     "${HOST_HOME}/.gemini/antigravity-cli"
-    "${CAW_MUX_SOCKET_DIR}"
-    "${HOST_HOME}/.cache/zellij"
-    "${HOST_HOME}/.config/zellij"
-    "${HOST_HOME}/.config/tmux"
     "${HOST_HOME}/.local/bin"
     "${HOST_BIN_CACHE}"
 )
 
+# 선택적 소켓 직결 모드(CAW_SHARE_MUX_SOCKET=true)일 때만 공용 소켓 디렉토리 준비
+if [[ "${CAW_SHARE_MUX_SOCKET}" == "true" ]]; then
+    REQUIRED_DIRS+=(
+        "${CAW_MUX_SOCKET_DIR}"
+        "${HOST_HOME}/.cache/zellij"
+        "${HOST_HOME}/.config/zellij"
+        "${HOST_HOME}/.config/tmux"
+    )
+fi
+
 for dir in "${REQUIRED_DIRS[@]}"; do
     run_or_echo mkdir -p "${dir}"
 done
-run_or_echo chmod 700 "${CAW_MUX_SOCKET_DIR}"
 
-if [[ "${CAW_RESOLVED_MUX}" == "zellij" ]]; then
-    run_or_echo mkdir -p "${CAW_MUX_SOCKET_DIR}/zellij"
-    run_or_echo chmod 700 "${CAW_MUX_SOCKET_DIR}/zellij"
-elif [[ "${CAW_RESOLVED_MUX}" == "tmux" ]]; then
-    run_or_echo mkdir -p "${CAW_MUX_SOCKET_DIR}/tmux"
-    run_or_echo chmod 700 "${CAW_MUX_SOCKET_DIR}/tmux"
-    # 호스트에 고전 ~/.tmux.conf 파일이 있을 경우 컨테이너 XDG 경로에서 읽히도록 심볼릭 링크 연결
-    if [[ -f "${HOST_HOME}/.tmux.conf" && ! -e "${HOST_HOME}/.config/tmux/tmux.conf" ]]; then
-        run_or_echo ln -s "../../.tmux.conf" "${HOST_HOME}/.config/tmux/tmux.conf"
+if [[ "${CAW_SHARE_MUX_SOCKET}" == "true" ]]; then
+    run_or_echo chmod 700 "${CAW_MUX_SOCKET_DIR}"
+    if [[ "${CAW_RESOLVED_MUX}" == "zellij" ]]; then
+        run_or_echo mkdir -p "${CAW_MUX_SOCKET_DIR}/zellij"
+        run_or_echo chmod 700 "${CAW_MUX_SOCKET_DIR}/zellij"
+    elif [[ "${CAW_RESOLVED_MUX}" == "tmux" ]]; then
+        run_or_echo mkdir -p "${CAW_MUX_SOCKET_DIR}/tmux"
+        run_or_echo chmod 700 "${CAW_MUX_SOCKET_DIR}/tmux"
+        if [[ -f "${HOST_HOME}/.tmux.conf" && ! -e "${HOST_HOME}/.config/tmux/tmux.conf" ]]; then
+            run_or_echo ln -s "../../.tmux.conf" "${HOST_HOME}/.config/tmux/tmux.conf"
+        fi
     fi
 fi
 
@@ -228,27 +235,34 @@ link_wrapper_with_backup "agy"
 AGY_BACKED_UP="${LAST_LINK_BACKED_UP}"
 run_or_echo ln -snf "${STACK_ROOT}/bin/caw" "${HOST_HOME}/.local/bin/caw"
 
-# 선택된 단 1종의 멀티플렉서 래퍼만 연결하고 비선택 래퍼는 제거
-case "${CAW_RESOLVED_MUX}" in
-    zellij)
-        unlink_wrapper_if_ours "tmux"
-        REAL_HOST_ZELLIJ="$(caw_find_real_binary "${STACK_ROOT}" "${HOST_HOME}" "zellij" || true)"
-        if [[ -n "${REAL_HOST_ZELLIJ}" ]]; then
-            run_or_echo cp -pf "${REAL_HOST_ZELLIJ}" "${HOST_BIN_CACHE}/zellij"
-        fi
-        link_wrapper_with_backup "zellij"
-        ZELLIJ_BACKED_UP="${LAST_LINK_BACKED_UP}"
-        ;;
-    tmux)
-        unlink_wrapper_if_ours "zellij"
-        link_wrapper_with_backup "tmux"
-        TMUX_BACKED_UP="${LAST_LINK_BACKED_UP}"
-        ;;
-    none|*)
-        unlink_wrapper_if_ours "zellij"
-        unlink_wrapper_if_ours "tmux"
-        ;;
-esac
+# 기본값(CAW_SHARE_MUX_SOCKET=false, SSH 2중 인증 경계 모드)에서는 호스트 순정 멀티플렉서를 그대로 사용하며,
+# 소켓 직결(true)을 명시적으로 활성화한 경우에만 소켓 고정 래퍼를 연결함
+if [[ "${CAW_SHARE_MUX_SOCKET}" == "true" ]]; then
+    case "${CAW_RESOLVED_MUX}" in
+        zellij)
+            unlink_wrapper_if_ours "tmux"
+            REAL_HOST_ZELLIJ="$(caw_find_real_binary "${STACK_ROOT}" "${HOST_HOME}" "zellij" || true)"
+            if [[ -n "${REAL_HOST_ZELLIJ}" ]]; then
+                run_or_echo cp -pf "${REAL_HOST_ZELLIJ}" "${HOST_BIN_CACHE}/zellij"
+            fi
+            link_wrapper_with_backup "zellij"
+            ZELLIJ_BACKED_UP="${LAST_LINK_BACKED_UP}"
+            ;;
+        tmux)
+            unlink_wrapper_if_ours "zellij"
+            link_wrapper_with_backup "tmux"
+            TMUX_BACKED_UP="${LAST_LINK_BACKED_UP}"
+            ;;
+        none|*)
+            unlink_wrapper_if_ours "zellij"
+            unlink_wrapper_if_ours "tmux"
+            ;;
+    esac
+else
+    unlink_wrapper_if_ours "zellij"
+    unlink_wrapper_if_ours "tmux"
+    caw_info "호스트 SSH 2중 인증 경계 모드 활성화 - 호스트 순정 멀티플렉서(${CAW_RESOLVED_MUX}) 사용"
+fi
 
 if ! caw_find_real_binary "${STACK_ROOT}" "${HOST_HOME}" "claude" >/dev/null 2>&1; then
     caw_warn "호스트 스탠드얼론 claude CLI(${HOST_HOME}/.local/bin/claude)가 감지되지 않았습니다."

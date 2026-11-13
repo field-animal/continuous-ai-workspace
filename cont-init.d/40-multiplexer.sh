@@ -9,6 +9,14 @@
 set -euo pipefail
 
 TARGET_USER="abc"
+
+# 보안 기본값(CAW_SHARE_MUX_SOCKET=false): 호스트 SSH 2중 인증 경계 유지를 위해 컨테이너 소켓 직결 생략
+if [[ "${CAW_SHARE_MUX_SOCKET:-false}" != "true" ]]; then
+    rm -f /usr/local/bin/zellij /usr/local/bin/tmux
+    echo "[caw-init:40-multiplexer] 호스트 SSH 2중 인증 경계 모드 유지 (컨테이너 소켓 직결 비활성)"
+    exit 0
+fi
+
 MUX_ROOT="${CAW_MUX_SOCKET_DIR:-/config/.cache/caw/mux}"
 ACTIVE_MUX_FILE="/opt/caw/host-bin/active-mux"
 
