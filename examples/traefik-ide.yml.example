@@ -1,0 +1,69 @@
+# =============================================================================
+# CAW 리버스 프록시 연동 레퍼런스 1 - Traefik v3 동적 라우팅 설정 예시
+# 파일 위치 예시: <traefik-rules-dir>/caw-ide.yml
+# 사전 조건:
+#   - 와일드카드 TLS 인증서(*.example.com) 발급 설정 완료
+#   - CAW .env 의 CAW_BASE_DOMAIN=example.com, CAW_PROXY_DOMAIN_TEMPLATE=ide-{{port}}.example.com 일치
+# =============================================================================
+
+http:
+  routers:
+    # 1. 기본 웹 IDE 접속 라우터 (https://ide.example.com)
+    caw-ide-main:
+      rule: "Host(`ide.example.com`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - caw-rate-limit
+        - caw-security-headers
+      service: caw-code-server
+      tls:
+        certResolver: letsencrypt
+
+    # 2. 1단계 서브도메인 포트 프록시 및 Antigravity 웹뷰 허브 라우터 (https://ide-3000.example.com 등)
+    # 주의: ide.example.com 에서 ide-<port>.example.com 을 iframe 임베딩하므로
+    # SAMEORIGIN 헤더를 제외하고 AGY_ALLOWED_DOMAINS 의 CSP frame-ancestors 검증을 사용함
+    caw-ide-port-proxy:
+      rule: "HostRegexp(`^ide-[0-9]+\\.example\\.com$`)"
+      entryPoints:
+        - websecure
+      middlewares:
+        - caw-rate-limit
+        - caw-port-proxy-headers
+      service: caw-code-server
+      tls:
+        certResolver: letsencrypt
+
+  middlewares:
+    # 무차별 비밀번호 대입 방어를 위한 요청 속도 제한
+    caw-rate-limit:
+      rateLimit:
+        average: 100
+        burst: 200
+        period: 1s
+
+    # 메인 IDE 라우터 보안 응답 헤더
+    caw-security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customFrameOptionsValue: "SAMEORIGIN"
+
+    # 서브도메인 포트 프록시 보안 헤더 (교차 서브도메인 웹뷰 iframe 허용을 위해 X-Frame-Options 제외)
+    caw-port-proxy-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+
+  services:
+    caw-code-server:
+      loadBalancer:
+        # Host 헤더를 원본 그대로 전달해야 code-server가 ide-<port> 서브도메인을 분기 처리함
+        passHostHeader: true
+        servers:
+          # 동일 호스트 네트워크 연동 시 127.0.0.1:8443, 분리된 프록시 서버일 경우 내부망 IP 지정
+          - url: "http://127.0.0.1:8443"

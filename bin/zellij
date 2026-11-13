@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# =============================================================================
+# CAW 공용 래퍼 - Zellij 멀티플렉서 (bin/zellij)
+# 목적:
+#   1) 외부 SSH와 code-server 내장 터미널 어디서 `zellij attach -c <세션명>`을 실행하더라도
+#      동일한 소켓 디렉토리(ZELLIJ_SOCKET_DIR)와 동일한 바이너리 버전을 사용하도록 일치시킴
+#   2) 소켓 디렉토리 권한을 항상 소유자 전용(0700)으로 강제하여 다중 계정 노출 차단
+# =============================================================================
+set -euo pipefail
+
+SELF_REAL="$(realpath "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "${SELF_REAL}")" && pwd)"
+STACK_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HOST_HOME_DIR="${CAW_HOST_HOME:-${HOME}}"
+
+# 공유 소켓 디렉토리 경로 고정 및 최소 권한(0700) 보장
+export ZELLIJ_SOCKET_DIR="${ZELLIJ_SOCKET_DIR:-${CAW_ZELLIJ_SOCKET_DIR:-${HOST_HOME_DIR}/.cache/zellij/ipc}}"
+mkdir -p "${ZELLIJ_SOCKET_DIR}"
+chmod 700 "${ZELLIJ_SOCKET_DIR}" 2>/dev/null || true
+
+resolve_real_zellij() {
+    local candidate candidate_real
+    local candidates=(
+        "/opt/caw/host-bin/zellij"
+        "${STACK_ROOT}/.caw-state/host-bin/zellij"
+        "${HOST_HOME_DIR}/.local/bin/zellij.standalone"
+        "${HOST_HOME_DIR}/.cargo/bin/zellij"
+    )
+
+    for candidate in "${candidates[@]}"; do
+        if [[ -x "${candidate}" ]]; then
+            candidate_real="$(realpath "${candidate}" 2>/dev/null || true)"
+            if [[ -n "${candidate_real}" && "${candidate_real}" != "${SELF_REAL}" ]]; then
+                printf '%s\n' "${candidate}"
+                return 0
+            fi
+        fi
+    done
+
+    local IFS=':'
+    local dir
+    for dir in ${PATH}; do
+        [[ -z "${dir}" ]] && continue
+        candidate="${dir}/zellij"
+        if [[ -x "${candidate}" ]]; then
+            candidate_real="$(realpath "${candidate}" 2>/dev/null || true)"
+            if [[ -n "${candidate_real}" && "${candidate_real}" != "${SELF_REAL}" ]]; then
+                printf '%s\n' "${candidate}"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
+REAL_ZELLIJ="$(resolve_real_zellij || true)"
+if [[ -z "${REAL_ZELLIJ}" ]]; then
+    echo "[CAW][ERROR] 실행 가능한 zellij 본체 바이너리를 찾을 수 없습니다." >&2
+    echo "[CAW][INFO] 호스트에 zellij를 설치한 뒤 scripts/install.sh 를 다시 실행하거나 다른 멀티플렉서를 사용하세요." >&2
+    exit 1
+fi
+
+exec "${REAL_ZELLIJ}" "$@"

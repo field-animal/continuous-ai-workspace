@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# =============================================================================
+# CAW (Continuous AI Workspace) 통합 세션 관리 CLI (bin/caw)
+# 목적:
+#   - attach : 내장 터미널과 외부 SSH 간 동일한 멀티플렉서 세션(기본 caw) 연결
+#   - status : 실행 중인 AI 에이전트 메모리/경과시간, 멀티플렉서 세션, 대화 락(.lock) 조회
+#   - unlock : 브라우저 종료 후 유휴 code-server 허브(agy --hub)가 잡고 있는 대화 락 해제
+#   - clean  : 종료된(EXITED) 멀티플렉서 잔여 세션 정리 및 유휴 프로세스 점검
+#   - doctor : 저장소 심볼릭 링크, 소켓 권한(0700), Linger 설정 등 환경 무결성 검증
+# =============================================================================
+set -euo pipefail
+
+SELF_REAL="$(realpath "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "${SELF_REAL}")" && pwd)"
+STACK_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HOST_HOME_DIR="${CAW_HOST_HOME:-${HOME}}"
+DEFAULT_SESSION="${CAW_SESSION_NAME:-caw}"
+SOCKET_DIR="${ZELLIJ_SOCKET_DIR:-${CAW_ZELLIJ_SOCKET_DIR:-${HOST_HOME_DIR}/.cache/zellij/ipc}}"
+
+CAW_VERSION="0.1.1-261113"
+if [[ -f "${STACK_ROOT}/VERSION" ]]; then
+    CAW_VERSION="$(tr -d '[:space:]' < "${STACK_ROOT}/VERSION")"
+fi
+
+log_info() { printf '[CAW][INFO] %s\n' "$*"; }
+log_warn() { printf '[CAW][WARN] %s\n' "$*" >&2; }
+log_err()  { printf '[CAW][ERROR] %s\n' "$*" >&2; }
+
+# 세션 이름 입력값 검증 (옵션 주입 및 경로 이탈 원천 차단)
+validate_session_name() {
+    local name="${1:-}"
+    if [[ ! "${name}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        log_err "유효하지 않은 세션 이름입니다 (영문, 숫자, ., _, - 만 허용): ${name}"
+        return 1
+    fi
+}
+
+# 1. 멀티플렉서 세션 연결 (기본: zellij attach -c caw)
+cmd_attach() {
+    local session_name="${1:-${DEFAULT_SESSION}}"
+    validate_session_name "${session_name}"
+
+    export ZELLIJ_SOCKET_DIR="${SOCKET_DIR}"
+    mkdir -p "${ZELLIJ_SOCKET_DIR}"
+    chmod 700 "${ZELLIJ_SOCKET_DIR}" 2>/dev/null || true
+
+    if command -v zellij >/dev/null 2>&1; then
+        log_info "Zellij 공유 세션 연결: ${session_name} (소켓: ${ZELLIJ_SOCKET_DIR})"
+        exec zellij attach -c "${session_name}"
+    elif command -v tmux >/dev/null 2>&1; then
+        log_info "zellij 미설치 환경 감지 - tmux 대체 세션 연결: ${session_name}"
+        exec tmux new-session -A -s "${session_name}"
+    else
+        log_err "실행 가능한 터미널 멀티플렉서(zellij 또는 tmux)가 설치되어 있지 않습니다."
+        return 1
+    fi
+}
+
+# 2. 활성 에이전트 프로세스, 멀티플렉서 세션, SQLite 대화 잠금(.lock) 상태 조회
+cmd_status() {
+    export ZELLIJ_SOCKET_DIR="${SOCKET_DIR}"
+
+    printf '=== [1] AI 에이전트 및 멀티플렉서 프로세스 현황 ===\n'
+    ps -eo pid,etimes,rss,args --no-headers 2>/dev/null | awk '
+        /([/ ]agy([ ]|$)|[/ ]claude([ ]|$)|[/ ]zellij([ ]|$))/ && !/awk/ && !/caw status/ {
+            mb = $3 / 1024.0
+            mins = int($2 / 60)
+            cmd = ""
+            for (i = 4; i <= NF; i++) cmd = cmd (i == 4 ? "" : " ") $i
+            printf "  PID=%-7s 경과=%-5dm 메모리=%6.1fMB  명령=%s\n", $1, mins, mb, substr(cmd, 1, 90)
+            found = 1
+        }
+        END {
+            if (!found) print "  (현재 실행 중인 agy / claude / zellij 프로세스 없음)"
+        }
+    '
+
+    printf '\n=== [2] 멀티플렉서 세션 목록 (소켓: %s) ===\n' "${ZELLIJ_SOCKET_DIR}"
+    if command -v zellij >/dev/null 2>&1 && [[ -d "${ZELLIJ_SOCKET_DIR}" ]]; then
+        zellij list-sessions 2>/dev/null || printf '  (활성 Zellij 세션 없음)\n'
+    elif command -v tmux >/dev/null 2>&1; then
+        tmux list-sessions 2>/dev/null || printf '  (활성 tmux 세션 없음)\n'
+    else
+        printf '  (멀티플렉서 미감지)\n'
+    fi
+
+    printf '\n=== [3] Antigravity 통합 저장소 대화 잠금(.lock) 점유 현황 ===\n'
+    local presence_dir="${HOST_HOME_DIR}/.gemini/antigravity/presence"
+    if [[ -d "${presence_dir}" ]] && command -v lsof >/dev/null 2>&1; then
+        local locks
+        locks="$(lsof +D "${presence_dir}" 2>/dev/null || true)"
+        if [[ -n "${locks}" ]]; then
+            printf '%s\n' "${locks}"
+            printf '  * 안내: 브라우저를 닫은 뒤 CLI에서 위 대화를 이어가려면 `caw unlock` 실행\n'
+        else
+            printf '  (점유 중인 대화 .lock 없음 - IDE 및 CLI 즉시 전환 가능)\n'
+        fi
+    else
+        printf '  (잠금 디렉토리 미생성 또는 lsof 미설치)\n'
+    fi
+}
+
+# 3. 유휴 code-server 허브(agy --hub)의 대화 락 안전 해제 (CLI TUI 세션은 보존)
+cmd_unlock() {
+    local dry_run=0
+    if [[ "${1:-}" == "--dry-run" ]]; then
+        dry_run=1
+    fi
+
+    local hub_pids=()
+    while IFS= read -r pid; do
+        [[ -n "${pid}" ]] && hub_pids+=("${pid}")
+    done < <(ps -eo pid,args --no-headers 2>/dev/null | awk '/[/ ]agy([ ]|$)/ && /--hub/ && !/awk/ {print $1}')
+
+    if [[ "${#hub_pids[@]}" -eq 0 ]]; then
+        log_info "현재 실행 중인 IDE 허브(agy --hub) 프로세스가 없습니다. 해제할 잠금이 없습니다."
+        return 0
+    fi
+
+    if [[ "${dry_run}" -eq 1 ]]; then
+        log_info "[DRY-RUN] 종료 대상 IDE 허브(agy --hub) PID: ${hub_pids[*]}"
+        return 0
+    fi
+
+    log_info "IDE 허브(agy --hub) 프로세스에 정상 종료(SIGTERM) 신호를 전송하여 대화 잠금을 반환합니다: ${hub_pids[*]}"
+    kill -TERM "${hub_pids[@]}" 2>/dev/null || true
+    sleep 1
+    log_info "잠금 반환 요청 완료. 'caw status' 명령으로 해제 여부를 확인하세요."
+}
+
+# 4. 종료된(EXITED) 멀티플렉서 세션 캐시 정리
+cmd_clean() {
+    local stop_claude=0
+    if [[ "${1:-}" == "--stop-claude" ]]; then
+        stop_claude=1
+    fi
+
+    export ZELLIJ_SOCKET_DIR="${SOCKET_DIR}"
+    if command -v zellij >/dev/null 2>&1 && [[ -d "${ZELLIJ_SOCKET_DIR}" ]]; then
+        local exited_sessions=()
+        while IFS= read -r line; do
+            if [[ "${line}" == *"EXITED"* ]]; then
+                local sname="${line%% *}"
+                [[ -n "${sname}" ]] && exited_sessions+=("${sname}")
+            fi
+        done < <(zellij list-sessions -n 2>/dev/null || true)
+
+        if [[ "${#exited_sessions[@]}" -gt 0 ]]; then
+            local target
+            for target in "${exited_sessions[@]}"; do
+                log_info "종료된(EXITED) Zellij 세션 정리: ${target}"
+                zellij delete-session "${target}" >/dev/null 2>&1 || true
+            done
+        else
+            log_info "정리할 EXITED 상태의 Zellij 세션이 없습니다 (활성 세션은 보존됨)."
+        fi
+    fi
+
+    if [[ "${stop_claude}" -eq 1 ]] && command -v claude >/dev/null 2>&1; then
+        log_info "Claude 백그라운드 세션 중지 요청(claude stop) 실행..."
+        claude stop 2>/dev/null || log_warn "실행 중인 백그라운드 claude 데몬이 없거나 수동 종료가 필요합니다."
+    fi
+}
+
+# 5. 환경 정합성 및 보안 권한 자가 진단 (실패 항목 존재 시 0이 아닌 종료 코드 반환)
+cmd_doctor() {
+    local failures=0
+    printf '=== CAW 환경 자가 진단 (버전: %s) ===\n' "${CAW_VERSION}"
+
+    # (1) Zellij 소켓 디렉토리 및 권한 점검
+    if [[ -d "${SOCKET_DIR}" ]]; then
+        local perm
+        perm="$(stat -c '%a' "${SOCKET_DIR}" 2>/dev/null || echo 'unknown')"
+        if [[ "${perm}" == "700" ]]; then
+            printf '  [PASS] 공유 소켓 디렉토리 권한 정상 (700): %s\n' "${SOCKET_DIR}"
+        else
+            printf '  [FAIL] 공유 소켓 디렉토리 권한 부적절 (%s != 700): %s\n' "${perm}" "${SOCKET_DIR}"
+            failures=$((failures + 1))
+        fi
+    else
+        printf '  [WARN] 공유 소켓 디렉토리 아직 미생성 (첫 attach 시 생성됨): %s\n' "${SOCKET_DIR}"
+    fi
+
+    # (2) Antigravity 통합 저장소 인증/설정 파일 점검
+    local ide_dir="${HOST_HOME_DIR}/.gemini/antigravity"
+    local token_file="${ide_dir}/antigravity-oauth-token"
+    if [[ -e "${token_file}" ]]; then
+        printf '  [PASS] Antigravity 통합 인증 토큰 확인됨: %s\n' "${token_file}"
+    else
+        printf '  [WARN] 통합 인증 토큰 미확인 (로그인 전이거나 install.sh 실행 필요): %s\n' "${token_file}"
+    fi
+
+    # (3) 핵심 CLI 도구 가용성 점검
+    local tool
+    for tool in agy claude zellij; do
+        if command -v "${tool}" >/dev/null 2>&1; then
+            printf '  [PASS] CLI 명령 감지됨 (%s): %s\n' "${tool}" "$(command -v "${tool}")"
+        else
+            printf '  [WARN] CLI 명령 미감지 (%s)\n' "${tool}"
+        fi
+    done
+
+    # (4) 호스트 systemd Linger 점검 (컨테이너 외부 호스트에서 실행될 때만 검사)
+    if [[ ! -f "/.dockerenv" ]] && command -v loginctl >/dev/null 2>&1; then
+        local linger_state
+        linger_state="$(loginctl show-user "${USER:-$(id -un)}" -p Linger --value 2>/dev/null || echo 'unknown')"
+        if [[ "${linger_state}" == "yes" ]]; then
+            printf '  [PASS] systemd 사용자 세션 유지(Linger=yes) 활성화됨\n'
+        else
+            printf '  [FAIL] systemd Linger 비활성(%s) - SSH 로그아웃 시 멀티플렉서 종료 위험 (`sudo loginctl enable-linger %s` 필요)\n' "${linger_state}" "${USER:-$(id -un)}"
+            failures=$((failures + 1))
+        fi
+    fi
+
+    if [[ "${failures}" -gt 0 ]]; then
+        log_err "자가 진단 결과 ${failures}건의 조치 필요 항목이 발견되었습니다."
+        return 1
+    fi
+    log_info "자가 진단 통과 완료."
+    return 0
+}
+
+cmd_help() {
+    cat <<EOF
+CAW (Continuous AI Workspace) CLI v${CAW_VERSION}
+
+사용법:
+  caw attach [세션명]        공유 멀티플렉서 세션 연결 또는 생성 (기본값: ${DEFAULT_SESSION})
+  caw status                에이전트 메모리/경과시간, 멀티플렉서 세션, 대화 락(.lock) 조회
+  caw unlock [--dry-run]    유휴 code-server 허브(agy --hub)의 대화 잠금 안전 반환
+  caw clean [--stop-claude] 종료된(EXITED) 멀티플렉서 세션 캐시 정리
+  caw doctor                소켓 권한, 통합 저장소 링크, systemd Linger 설정 점검
+  caw version               패키지 버전 출력
+  caw help                  도움말 출력
+EOF
+}
+
+SUBCMD="${1:-help}"
+shift || true
+
+case "${SUBCMD}" in
+    attach)             cmd_attach "$@" ;;
+    status)             cmd_status "$@" ;;
+    unlock)             cmd_unlock "$@" ;;
+    clean)              cmd_clean "$@" ;;
+    doctor)             cmd_doctor "$@" ;;
+    version|--version|-v) printf '%s\n' "${CAW_VERSION}" ;;
+    help|--help|-h)     cmd_help ;;
+    *)
+        log_err "알 수 없는 하위 명령입니다: ${SUBCMD}"
+        cmd_help >&2
+        exit 1
+        ;;
+esac

@@ -1,0 +1,12 @@
+# =============================================================================
+# CAW 선택 모듈 - 호스트 Docker 제어(DooD) 연동 (compose.dood.yml)
+# 목적: CAW_ENABLE_DOOD=true 일 때만 컨테이너에 호스트 Docker 소켓 및 CLI를 연결함
+# 주의: 신뢰된 개발 서버에서만 활성화할 것
+# =============================================================================
+
+services:
+  code-server:
+    volumes:
+      - ${CAW_DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker:ro
+      - /usr/libexec/docker/cli-plugins:/usr/libexec/docker/cli-plugins:ro

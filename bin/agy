@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# =============================================================================
+# CAW 공용 래퍼 - Antigravity CLI (bin/agy)
+# 목적:
+#   1) IDE 확장(antigravity/)과 호스트 CLI가 동일한 SQLite 대화 저장소를 공유하도록
+#      --app_data_dir=antigravity 옵션을 자동 주입하여 양방향 세션 연속성 보장
+#   2) 현재 작업 디렉토리($PWD)와 일치하는 IDE 프로젝트 ID를 탐색하여 --project 자동 매칭
+#   3) 단일 바이너리 직접 바인드 마운트 없이 실행하여 호스트 업데이트 시 EBUSY 방지
+# =============================================================================
+set -euo pipefail
+
+SELF_REAL="$(realpath "${BASH_SOURCE[0]}")"
+HOST_HOME_DIR="${CAW_HOST_HOME:-${HOME}}"
+
+# 실제 agy 네이티브 바이너리 탐색 함수 (자기 자신 재귀 호출 원천 차단)
+resolve_real_agy() {
+    local candidate candidate_real
+    local candidates=(
+        "${HOST_HOME_DIR}/.gemini/bin/agy"
+        "/config/.gemini/bin/agy"
+        "${HOST_HOME_DIR}/.local/bin/agy.standalone"
+        "/opt/caw/host-bin/agy"
+    )
+
+    for candidate in "${candidates[@]}"; do
+        if [[ -x "${candidate}" ]]; then
+            candidate_real="$(realpath "${candidate}" 2>/dev/null || true)"
+            if [[ -n "${candidate_real}" && "${candidate_real}" != "${SELF_REAL}" ]]; then
+                printf '%s\n' "${candidate}"
+                return 0
+            fi
+        fi
+    done
+
+    # PATH 내 타 경로 탐색
+    local IFS=':'
+    local dir
+    for dir in ${PATH}; do
+        [[ -z "${dir}" ]] && continue
+        candidate="${dir}/agy"
+        if [[ -x "${candidate}" ]]; then
+            candidate_real="$(realpath "${candidate}" 2>/dev/null || true)"
+            if [[ -n "${candidate_real}" && "${candidate_real}" != "${SELF_REAL}" ]]; then
+                printf '%s\n' "${candidate}"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
+# 현재 디렉토리($PWD)를 기반으로 IDE에 등록된 프로젝트 ID를 안전하게 탐색하는 함수
+resolve_project_id() {
+    local projects_dir="${HOST_HOME_DIR}/.gemini/config/projects"
+    if [[ ! -d "${projects_dir}" ]] && [[ -d "${HOME}/.gemini/config/projects" ]]; then
+        projects_dir="${HOME}/.gemini/config/projects"
+    fi
+
+    if [[ ! -d "${projects_dir}" ]] || ! command -v python3 >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local current_pwd
+    current_pwd="$(pwd -P 2>/dev/null || pwd)"
+
+    # 인젝션 방지를 위해 sys.argv 로만 경로를 전달하고 경계 슬래시(/)를 포함해 최장 일치 비교
+    python3 - "${projects_dir}" "${current_pwd}" <<'PYEOF' 2>/dev/null || true
+import glob
+import json
+import os
+import sys
+import urllib.parse
+
+projects_dir = sys.argv[1]
+pwd = os.path.realpath(sys.argv[2])
+best_id = ""
+best_len = -1
+
+def extract_paths(data):
+    uris = []
+    if isinstance(data.get("folderUri"), str):
+        uris.append(data["folderUri"])
+    if isinstance(data.get("folders"), list):
+        for item in data["folders"]:
+            if isinstance(item, dict) and isinstance(item.get("uri"), str):
+                uris.append(item["uri"])
+    return uris
+
+for path in sorted(glob.glob(os.path.join(projects_dir, "*.json"))):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except Exception:
+        continue
+
+    proj_id = payload.get("id") or os.path.splitext(os.path.basename(path))[0]
+    if not isinstance(proj_id, str) or not proj_id:
+        continue
+
+    for uri in extract_paths(payload):
+        if not uri.startswith("file://"):
+            continue
+        folder = os.path.realpath(urllib.parse.unquote(uri[7:]))
+        prefix = folder.rstrip("/") + "/"
+        if pwd == folder or pwd.startswith(prefix):
+            if len(folder) > best_len:
+                best_len = len(folder)
+                best_id = proj_id
+
+if best_id:
+    sys.stdout.write(best_id)
+PYEOF
+}
+
+REAL_AGY="$(resolve_real_agy || true)"
+if [[ -z "${REAL_AGY}" ]]; then
+    echo "[CAW][ERROR] 실행 가능한 Antigravity(agy) 본체 바이너리를 찾을 수 없습니다." >&2
+    echo "[CAW][INFO] code-server 내 Google Antigravity 확장을 활성화하거나 호스트에 agy CLI를 설치하세요." >&2
+    exit 1
+fi
+
+HAS_APP_DATA_DIR=0
+HAS_PROJECT=0
+PASSTHROUGH_ONLY=0
+IS_SUBCOMMAND=0
+FIRST_POSITIONAL=""
+
+for arg in "$@"; do
+    case "${arg}" in
+        --app_data_dir|--app_data_dir=*|--app-data-dir|--app-data-dir=*)
+            HAS_APP_DATA_DIR=1
+            ;;
+        --project|--project=*)
+            HAS_PROJECT=1
+            ;;
+        --hub|--help|-h|--version|-v)
+            PASSTHROUGH_ONLY=1
+            ;;
+        -*)
+            ;;
+        *)
+            if [[ -z "${FIRST_POSITIONAL}" ]]; then
+                FIRST_POSITIONAL="${arg}"
+            fi
+            ;;
+    esac
+done
+
+case "${FIRST_POSITIONAL}" in
+    help|version|update|changelog|install|acp|remote-control|mic-serve)
+        PASSTHROUGH_ONLY=1
+        ;;
+    models|plugin|plugins|mcp|agent|agents)
+        IS_SUBCOMMAND=1
+        ;;
+esac
+
+if [[ "${PASSTHROUGH_ONLY}" == "1" ]]; then
+    exec "${REAL_AGY}" "$@"
+fi
+
+EXTRA_ARGS=()
+if [[ "${HAS_APP_DATA_DIR}" == "0" ]]; then
+    EXTRA_ARGS+=("--app_data_dir=antigravity")
+fi
+
+if [[ "${IS_SUBCOMMAND}" == "0" && "${HAS_PROJECT}" == "0" ]]; then
+    MATCHED_PROJECT="$(resolve_project_id)"
+    if [[ -n "${MATCHED_PROJECT}" ]]; then
+        EXTRA_ARGS+=("--project" "${MATCHED_PROJECT}")
+    fi
+fi
+
+exec "${REAL_AGY}" "${EXTRA_ARGS[@]}" "$@"

@@ -1,0 +1,27 @@
+# =============================================================================
+# CAW 로컬 확장 오버라이드 템플릿 (compose.override.yml.example)
+# 사용법:
+#   복수의 보조 워크스페이스 마운트나 외부 프록시 Docker 네트워크 연결이 필요한 호스트에서만
+#   'cp compose.override.yml.example compose.override.yml' 실행 후 경로를 수정하세요.
+# 특징:
+#   - Docker Compose 표준 규약에 따라 별도 -f 옵션 없이도 자동 병합되며, install.sh 실행 시에도 자동 포함됩니다.
+#   - compose.override.yml 파일은 .gitignore 에 등록되어 Git 커밋에서 자동 제외됩니다.
+# =============================================================================
+
+services:
+  code-server:
+    volumes:
+      # 복수 보조 워크스페이스 추가 마운트 예시 (개수 제한 없음, 호스트와 동일 절대경로 권장)
+      - /srv/projects:/srv/projects
+      - /opt/infra:/opt/infra
+      # 읽기 전용 참조 디렉토리 마운트 예시
+      # - /srv/shared-docs:/srv/shared-docs:ro
+
+    # 기존 리버스 프록시(Traefik, NPM 등)의 외부 Docker 브리지 네트워크에 직접 연결할 경우 예시
+    # networks:
+    #   - default
+    #   - proxy-net
+
+# networks:
+#   proxy-net:
+#     external: true

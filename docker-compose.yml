@@ -1,0 +1,78 @@
+# =============================================================================
+# CAW (Continuous AI Workspace) - 코어 컨테이너 구성 (docker-compose.yml)
+# 목적: 프록시 중립적인 code-server 구동 및 호스트-컨테이너 간 AI 세션/멀티플렉서 상태 일치
+# 비고:
+#   - PUID, PGID, HOST_HOME, CAW_WORKSPACE_DIR 등 미선언 시 현재 실행 사용자 환경으로 자동 치환됨
+#   - 복수 워크스페이스 추가 마운트는 compose.override.yml, DooD 기능은 compose.dood.yml 로 분리됨
+# =============================================================================
+
+services:
+  code-server:
+    image: ${CAW_IMAGE_REPO:-lscr.io/linuxserver/code-server}:${CAW_IMAGE_TAG:-4.145.2}
+    container_name: ${CAW_CONTAINER_NAME:-code-server}
+    environment:
+      - PUID=${PUID:-${UID:-1000}}
+      - PGID=${PGID:-${GID:-1000}}
+      - TZ=${TZ:-Asia/Seoul}
+      - PASSWORD=${CAW_PASSWORD:-}
+      - HASHED_PASSWORD=${CAW_HASHED_PASSWORD:-}
+      - SUDO_PASSWORD=${CAW_SUDO_PASSWORD:-}
+      - PROXY_DOMAIN=${CAW_PROXY_DOMAIN_TEMPLATE:-}
+      - CODE_SERVER_COOKIE_SUFFIX=${CAW_COOKIE_SUFFIX:-_caw}
+      # Antigravity 웹뷰 패널의 서브도메인 프록시(ide-<port>.<domain>) 허용 설정
+      - AGY_ALLOWED_DOMAINS=${CAW_BASE_DOMAIN:-}
+      - ANTIGRAVITY_CDE=true
+      - DEFAULT_WORKSPACE=${CAW_WORKSPACE_DIR:-${HOST_HOME:-${HOME}}/workspace}
+      # 호스트와 컨테이너 내장 터미널이 동일한 Zellij 세션 소켓을 바라보도록 고정
+      - ZELLIJ_SOCKET_DIR=${CAW_ZELLIJ_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/zellij/ipc}
+      - CAW_SESSION_NAME=${CAW_SESSION_NAME:-caw}
+      - CAW_HOST_HOME=${HOST_HOME:-${HOME}}
+      - CAW_AUTO_INSTALL_EXTENSIONS=${CAW_AUTO_INSTALL_EXTENSIONS:-true}
+      - CAW_ENABLE_DOOD=${CAW_ENABLE_DOOD:-false}
+    # 컨테이너 내부에서 에이전트의 Linux 네임스페이스 샌드박스 실행 허용
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    volumes:
+      # 1. code-server 설정 및 확장 프로그램 영속 저장소 (미선언 시 사용자 데이터 디렉토리 자동 사용)
+      - ${CAW_CONFIG_DIR:-${HOST_HOME:-${HOME}}/.local/share/caw/code-server-config}:/config
+
+      # 2. AI 에이전트(Antigravity / Claude Code) 세션 및 인증 저장소 이중 매핑
+      # 컨테이너 기본 HOME(/config)과 호스트 절대경로 양쪽 모두 일치시켜 심볼릭 링크 및 프로젝트 해시 호환 보장
+      - ${HOST_HOME:-${HOME}}/.claude:/config/.claude
+      - ${HOST_HOME:-${HOME}}/.gemini:/config/.gemini
+      - ${HOST_HOME:-${HOME}}/.claude:${HOST_HOME:-${HOME}}/.claude
+      - ${HOST_HOME:-${HOME}}/.gemini:${HOST_HOME:-${HOME}}/.gemini
+
+      # 3. Zellij 멀티플렉서 캐시·설정·소켓 공유 (내장 터미널과 외부 SSH 간 동일 세션 연결 보장)
+      - ${HOST_HOME:-${HOME}}/.cache/zellij:/config/.cache/zellij
+      - ${HOST_HOME:-${HOME}}/.cache/zellij:${HOST_HOME:-${HOME}}/.cache/zellij
+      - ${HOST_HOME:-${HOME}}/.config/zellij:/config/.config/zellij
+
+      # 4. 호스트 로컬 바이너리 및 CAW 공용 CLI 래퍼 읽기 전용 연동 (업데이트 시 EBUSY 방지)
+      - ${HOST_HOME:-${HOME}}/.local/bin:${HOST_HOME:-${HOME}}/.local/bin:ro
+      - ./.caw-state/host-bin:/opt/caw/host-bin:ro
+      - ./bin/agy:/usr/local/bin/agy:ro
+      - ./bin/claude:/usr/local/bin/claude:ro
+      - ./bin/zellij:/usr/local/bin/zellij:ro
+      - ./bin/caw:/usr/local/bin/caw:ro
+
+      # 5. 기기 고유 식별자 및 Git 전역 설정 읽기 전용 매핑
+      - /etc/machine-id:/etc/machine-id:ro
+      - ${HOST_HOME:-${HOME}}/.gitconfig:/config/.gitconfig:ro
+      - ${HOST_HOME:-${HOME}}/.gitconfig:${HOST_HOME:-${HOME}}/.gitconfig:ro
+
+      # 6. 주 작업 워크스페이스 매핑 (호스트 세션 경로 해시와 1:1 일치를 위해 동일 절대경로 사용)
+      - ${CAW_WORKSPACE_DIR:-${HOST_HOME:-${HOME}}/workspace}:${CAW_WORKSPACE_DIR:-${HOST_HOME:-${HOME}}/workspace}
+
+      # 7. 독립 기동 초기화 모듈 디렉토리 (파일 삭제 시 해당 기능만 무영향 제외 가능)
+      - ./cont-init.d:/custom-cont-init.d:ro
+    ports:
+      # 보안 기본값: 127.0.0.1 바인딩으로 외부 무인증 노출 차단
+      - "${CAW_BIND_ADDR:-127.0.0.1}:${CAW_PORT:-8443}:8443"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

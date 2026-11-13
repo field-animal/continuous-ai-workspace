@@ -1,0 +1,27 @@
+# =============================================================================
+# CAW (Continuous AI Workspace) - Git 노출 차단 목록
+# 목적: 시크릿, 인증 토큰, 호스트별 로컬 오버라이드, 상용 바이너리, 백업 메타데이터 커밋 방지
+# =============================================================================
+
+# 환경변수 및 시크릿 파일 (.env.example 만 허용)
+.env
+.env.*
+!.env.example
+*.secret
+*.key
+*.pem
+acme.json
+
+# 호스트별 로컬 Compose 오버라이드 (compose.override.yml.example 만 허용)
+compose.override.yml
+docker-compose.override.yml
+
+# 상용 바이너리 및 확장 아카이브 반입 원천 차단 (저작권 및 배포 약관 준수)
+*.vsix
+bin/agy.real
+bin/claude.real
+
+# 설치/전환 시 생성되는 로컬 백업 상태 기록
+.caw-state/
+*.bak
+*.backup
