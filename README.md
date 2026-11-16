@@ -1,6 +1,6 @@
 # CAW (Continuous AI Workspace)
 
-**버전:** `0.1.9-261116`
+**버전:** `0.1.10-261116`
 
 **CAW (`continuous-ai-workspace`)** 는 클라이언트 기기(노트북·데스크톱)의 전원 종료, 절전 진입, 또는 기기를 소지하지 않은 채 다른 장소의 새로운 머신으로 이동하더라도 **동일한 리눅스 호스트 위에서 AI 에이전트(Google Antigravity, Claude Code)와 웹 IDE(`code-server`), 터미널 멀티플렉서(`tmux` 또는 `zellij`) 세션을 끊김 없이 이어가기 위한 범용 인프라 구성 패키지**입니다.
 
@@ -49,13 +49,14 @@
 
 ```text
 continuous-ai-workspace/
-├── VERSION                          # 패키지 버전 (0.1.9-261116)
+├── VERSION                          # 패키지 버전 (0.1.10-261116)
 ├── AGENTS.md                        # 타 호스트 AI 에이전트 자동 실사·구축 표준 규약
 ├── .env.example                     # 서버별 환경변수 템플릿 (사용자·경로·멀티플렉서 중립)
 ├── .gitignore                       # 시크릿, 로컬 오버라이드, 상용 바이너리, 백업 커밋 차단
 ├── docker-compose.yml               # 코어 구성 (기본 SSH 2중 인증 경계, 소켓 직결은 주석 분리)
 ├── compose.override.yml.example     # [선택 템플릿] 복수 워크스페이스 및 외부 네트워크 로컬 확장
 ├── compose.dood.yml                 # [선택 모듈] 호스트 Docker(DooD) 연동
+├── history/                         # 날짜·버전별 패키지 변경 이력 (상대경로 기준)
 ├── lib/
 │   ├── common.sh                    # eval 없는 .env 파서, 자동 기본값 치환, 경로·시크릿·잠금 검증
 │   ├── multiplexer.sh               # 멀티플렉서 단일 감지, 미설치 선택 설치(정책 A) 모듈
