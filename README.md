@@ -1,8 +1,27 @@
 # CAW (Continuous AI Workspace)
 
-**버전:** `0.1.7-261116`
+**버전:** `0.1.8-261116`
 
 **CAW (`continuous-ai-workspace`)** 는 클라이언트 기기(노트북·데스크톱)의 전원 종료, 절전 진입, 또는 기기를 소지하지 않은 채 다른 장소의 새로운 머신으로 이동하더라도 **동일한 리눅스 호스트 위에서 AI 에이전트(Google Antigravity, Claude Code)와 웹 IDE(`code-server`), 터미널 멀티플렉서(`tmux` 또는 `zellij`) 세션을 끊김 없이 이어가기 위한 범용 인프라 구성 패키지**입니다.
+
+---
+
+## Required (필수 환경 요구사항)
+
+도입 전 대상 서버와 프록시 환경이 아래 요구사항을 충족하는지 반드시 확인하십시오.
+
+1. **호스트 OS 및 런타임**
+   - **Linux (`systemd` 환경 권장)**: SSH 로그아웃 후 멀티플렉서 백그라운드 유지를 위한 `loginctl enable-linger` 지원
+   - **Docker Engine & Docker Compose v2**: `docker compose` CLI 플러그인 필수
+   - **호스트 SSH 데몬 (`sshd`)**: 기본 보안 모드(호스트 SSH 2중 인증 경계)에서 웹 IDE 터미널 -> 호스트 진입 시 필요
+   - **기본 유틸리티**: `bash`, `tar`, `awk`, `realpath`, `sha256sum` (권장: 활성 세션 잠금 정밀 검사용 `lsof`, `zellij` 자동 설치용 `curl`)
+2. **리버스 프록시 및 도메인·TLS 요구사항 (외부 HTTPS 연동 시 필수)**
+   - **와일드카드 TLS 인증서 (`*.<도메인>`) 및 서브도메인 라우팅**: 메인 도메인(`ide.<도메인>`)과 1단계 포트 프록시(`ide-<숫자포트>.<도메인>`)가 모두 연결되어야 합니다(단일 하위 경로 `/ide` 프록시 방식은 에이전트 웹뷰 허브를 지원하지 않음).
+   - **서비스별 프록시 규칙 격리 및 헤더 분리**: 프록시 설정은 타 서비스와 격리된 개별 파일로 구성하는 것을 권장하며, 포트 프록시(`ide-<포트>.<도메인>`) 구간에는 전역 `X-Frame-Options`(`SAMEORIGIN` / `DENY`)가 상속되지 않도록 제외해야 에이전트 웹뷰 iframe이 차단되지 않습니다(Traefik 사용 시 `exposedByDefault: false` 권장, `examples/` 참조).
+   - **프로토콜 전달**: WebSocket(`Upgrade` / `Connection`) 업그레이드 및 원본 `Host` 헤더 보존(`passHostHeader: true` / `proxy_set_header Host $host`) 필수
+3. **기존 운영 서버 전환 (`--adopt`) 시 사전 조건**
+   - 모든 활성 AI 에이전트 세션을 정상 종료한 상태에서, 브라우저 내장 터미널이 아닌 **외부 직접 SSH 접속 터미널**에서 전환 스크립트를 실행해야 합니다.
+   - 기존 컨테이너가 `.gemini` 데이터를 호스트 홈이 아닌 `/config` 내부에 보관해 왔다면 사전에 호스트 `~/.gemini`로 통합한 뒤 실행하십시오(`install.sh`가 사전 감지하여 차단 안내함).
 
 ---
 
@@ -30,7 +49,7 @@
 
 ```text
 continuous-ai-workspace/
-├── VERSION                          # 패키지 버전 (0.1.7-261116)
+├── VERSION                          # 패키지 버전 (0.1.8-261116)
 ├── .env.example                     # 서버별 환경변수 템플릿 (사용자·경로·멀티플렉서 중립)
 ├── .gitignore                       # 시크릿, 로컬 오버라이드, 상용 바이너리, 백업 커밋 차단
 ├── docker-compose.yml               # 코어 구성 (기본 SSH 2중 인증 경계, 소켓 직결은 주석 분리)
