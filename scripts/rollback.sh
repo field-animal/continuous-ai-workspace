@@ -2,8 +2,11 @@
 # =============================================================================
 # CAW (Continuous AI Workspace) 원복(롤백) 스크립트 (scripts/rollback.sh)
 # 목적:
-#   install.sh(--adopt 포함)가 기록한 .caw-state/manifest.env 를 기반으로
-#   CAW 컨테이너를 중지·제거하고 기존 백업 컨테이너 및 호스트 CLI 바이너리를 원상 복구함
+#   install.sh 가 선행 기록한 .caw-state/manifest.env 와 도입 전 원본 백업(pre-caw-gemini.tar.gz)을
+#   기반으로 컨테이너, 호스트 CLI 바이너리, 에이전트 DB·세션 디렉토리를 도입 이전 상태로 복원함
+# 지원 옵션:
+#   --keep-sessions  컨테이너·바이너리만 원복하고 현재 누적된 에이전트 대화 세션 디렉토리는 유지
+#   --dry-run        실제 변경 없이 복원 예정 동작만 출력
 # =============================================================================
 set -euo pipefail
 
@@ -12,8 +15,11 @@ STACK_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # shellcheck source=../lib/common.sh
 source "${STACK_ROOT}/lib/common.sh"
+# shellcheck source=../lib/backup.sh
+source "${STACK_ROOT}/lib/backup.sh"
 
 DRY_RUN=0
+KEEP_SESSIONS=0
 ENV_FILE="${STACK_ROOT}/.env"
 
 while [[ $# -gt 0 ]]; do
@@ -22,12 +28,16 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=1
             shift
             ;;
+        --keep-sessions)
+            KEEP_SESSIONS=1
+            shift
+            ;;
         --env-file)
             ENV_FILE="${2:?파일 경로 필요}"
             shift 2
             ;;
         -h|--help)
-            printf '사용법: %s [--dry-run] [--env-file <경로>]\n' "$(basename "$0")"
+            printf '사용법: %s [--dry-run] [--keep-sessions] [--env-file <경로>]\n' "$(basename "$0")"
             exit 0
             ;;
         *)
@@ -45,7 +55,8 @@ run_or_echo() {
     fi
 }
 
-MANIFEST_FILE="${STACK_ROOT}/.caw-state/manifest.env"
+STATE_DIR="${STACK_ROOT}/.caw-state"
+MANIFEST_FILE="${STATE_DIR}/manifest.env"
 if [[ ! -f "${MANIFEST_FILE}" ]]; then
     caw_err "롤백 매니페스트 파일을 찾을 수 없습니다: ${MANIFEST_FILE}"
     exit 1
@@ -53,12 +64,14 @@ fi
 
 caw_load_env_file "${MANIFEST_FILE}"
 if [[ -f "${ENV_FILE}" ]]; then
-    caw_load_env_file "${ENV_FILE}"
+    caw_load_env_file "${ENV_FILE}" 1
 fi
 
 HOST_HOME_DIR="${CAW_STATE_HOST_HOME:-${HOST_HOME:-${HOME}}}"
 CONTAINER_NAME="${CAW_STATE_CONTAINER_NAME:-${CAW_CONTAINER_NAME:-code-server}}"
 BACKUP_CONTAINER="${CAW_STATE_BACKUP_CONTAINER:-}"
+HAD_IDE_DIR="${CAW_STATE_HAD_IDE_DIR:-0}"
+HAD_CLI_DIR="${CAW_STATE_HAD_CLI_DIR:-0}"
 
 # 활성 대화 잠금 확인 (진행 중인 작업 손실 방지)
 if ! caw_check_no_active_locks "${HOST_HOME_DIR}"; then
@@ -66,7 +79,7 @@ if ! caw_check_no_active_locks "${HOST_HOME_DIR}"; then
     exit 1
 fi
 
-# 1. CAW 컨테이너 중지 및 제거
+# 1. CAW 컨테이너 중지 및 제거 (세션 디렉토리 복원 전 컨테이너 프로세스 점유 해제)
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     if [[ -f "${ENV_FILE}" ]]; then
         caw_build_compose_args "${STACK_ROOT}"
@@ -77,7 +90,14 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     fi
 fi
 
-# 2. 호스트 로컬 CLI 심볼릭 링크 제거 및 백업 원형 복원
+# 2. 에이전트 DB·세션 디렉토리 도입 이전 원본(분리 상태) 복원
+if [[ "${KEEP_SESSIONS}" -eq 1 ]]; then
+    caw_info "--keep-sessions 옵션 지정됨 - 현재 에이전트 세션 디렉토리는 그대로 유지합니다."
+else
+    caw_restore_initial_agent_dirs "${STATE_DIR}" "${HOST_HOME_DIR}" "${HAD_IDE_DIR}" "${HAD_CLI_DIR}" "${DRY_RUN}"
+fi
+
+# 3. 호스트 로컬 CLI 심볼릭 링크 제거 및 백업 원형 복원
 restore_cli_link() {
     local bin_name="$1"
     local backed_up_flag="$2"
@@ -104,7 +124,7 @@ restore_cli_link "zellij" "${CAW_STATE_ZELLIJ_BACKED_UP:-0}"
 restore_cli_link "tmux" "${CAW_STATE_TMUX_BACKED_UP:-0}"
 restore_cli_link "caw" "${CAW_STATE_CAW_BACKED_UP:-0}"
 
-# 3. 기존 운영 컨테이너(*-caw-backup) 이름 복원 및 재기동
+# 4. 기존 운영 컨테이너(*-caw-backup) 이름 복원 및 재기동
 if [[ -n "${BACKUP_CONTAINER}" ]] && command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     if docker container inspect "${BACKUP_CONTAINER}" >/dev/null 2>&1; then
         caw_info "백업된 기존 컨테이너('${BACKUP_CONTAINER}')를 '${CONTAINER_NAME}'으로 복원 및 기동합니다."
@@ -120,4 +140,4 @@ if [[ "${DRY_RUN}" -eq 0 ]]; then
     rm -f "${MANIFEST_FILE}"
 fi
 
-caw_info "CAW 원복(롤백) 완료 (DRY_RUN=${DRY_RUN})."
+caw_info "CAW 원복(롤백) 완료 (DRY_RUN=${DRY_RUN}, KEEP_SESSIONS=${KEEP_SESSIONS})."

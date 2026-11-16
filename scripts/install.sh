@@ -16,6 +16,8 @@ STACK_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${STACK_ROOT}/lib/common.sh"
 # shellcheck source=../lib/multiplexer.sh
 source "${STACK_ROOT}/lib/multiplexer.sh"
+# shellcheck source=../lib/backup.sh
+source "${STACK_ROOT}/lib/backup.sh"
 
 DRY_RUN=0
 ADOPT_MODE=0
@@ -106,19 +108,66 @@ if ! caw_check_no_active_locks "${HOST_HOME}"; then
     exit 1
 fi
 
-# 4. 정책 A 기반 단일 멀티플렉서(zellij | tmux | none) 확정 및 선택 설치
-caw_select_and_prepare_mux "${STACK_ROOT}" "${HOST_HOME}" "${CAW_MULTIPLEXER}" "${DRY_RUN}"
-caw_info "확정된 단일 멀티플렉서 모드: ${CAW_RESOLVED_MUX}"
-
-# 5. Docker Compose 인자 조립 (compose.override.yml 및 compose.dood.yml 자동 반영)
-caw_build_compose_args "${STACK_ROOT}"
-caw_info "적용 대상 Compose 구성: ${CAW_COMPOSE_ARGS[*]}"
-
-# 6. 호스트 영속 디렉토리 및 소켓 디렉토리 사전 생성
+# 4. 최초 도입 백업 및 롤백 매니페스트 선행 기록 준비 (변경 작업 도중 중단되어도 즉시 복구 보장)
 STATE_DIR="${STACK_ROOT}/.caw-state"
 HOST_BIN_CACHE="${STATE_DIR}/host-bin"
 MANIFEST_FILE="${STATE_DIR}/manifest.env"
 
+AGY_BACKED_UP=0
+CAW_BACKED_UP=0
+ZELLIJ_BACKED_UP=0
+TMUX_BACKED_UP=0
+BACKUP_CONTAINER=""
+CAW_RESOLVED_MUX="none"
+
+if [[ -f "${MANIFEST_FILE}" ]]; then
+    # 재실행 시 최초 도입 시점의 백업 메타데이터 유실 방지
+    caw_load_env_file "${MANIFEST_FILE}" 1 || true
+    [[ "${CAW_STATE_AGY_BACKED_UP:-0}" == "1" ]] && AGY_BACKED_UP=1
+    [[ "${CAW_STATE_CAW_BACKED_UP:-0}" == "1" ]] && CAW_BACKED_UP=1
+    [[ "${CAW_STATE_ZELLIJ_BACKED_UP:-0}" == "1" ]] && ZELLIJ_BACKED_UP=1
+    [[ "${CAW_STATE_TMUX_BACKED_UP:-0}" == "1" ]] && TMUX_BACKED_UP=1
+    [[ "${CAW_STATE_HAD_IDE_DIR:-0}" == "1" ]] && CAW_HAD_IDE_DIR=1
+    [[ "${CAW_STATE_HAD_CLI_DIR:-0}" == "1" ]] && CAW_HAD_CLI_DIR=1
+    [[ -n "${CAW_STATE_BACKUP_CONTAINER:-}" ]] && BACKUP_CONTAINER="${CAW_STATE_BACKUP_CONTAINER}"
+fi
+
+save_manifest() {
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+        return 0
+    fi
+    mkdir -p "${STATE_DIR}"
+    cat > "${MANIFEST_FILE}.tmp" <<EOF
+CAW_STATE_UPDATED_AT="$(date +%Y-%m-%dT%H:%M:%S%z)"
+CAW_STATE_HOST_HOME="${HOST_HOME}"
+CAW_STATE_CONTAINER_NAME="${CAW_CONTAINER_NAME}"
+CAW_STATE_BACKUP_CONTAINER="${BACKUP_CONTAINER}"
+CAW_STATE_ACTIVE_MUX="${CAW_RESOLVED_MUX}"
+CAW_STATE_HAD_IDE_DIR="${CAW_HAD_IDE_DIR}"
+CAW_STATE_HAD_CLI_DIR="${CAW_HAD_CLI_DIR}"
+CAW_STATE_AGY_BACKED_UP="${AGY_BACKED_UP}"
+CAW_STATE_CAW_BACKED_UP="${CAW_BACKED_UP}"
+CAW_STATE_ZELLIJ_BACKED_UP="${ZELLIJ_BACKED_UP}"
+CAW_STATE_TMUX_BACKED_UP="${TMUX_BACKED_UP}"
+EOF
+    chmod 600 "${MANIFEST_FILE}.tmp"
+    mv -f "${MANIFEST_FILE}.tmp" "${MANIFEST_FILE}"
+}
+
+# 디렉토리 생성·링크 변경 전에 최초 에이전트 DB·세션 원본 백업 및 매니페스트 선행 기록 수행
+caw_backup_initial_agent_dirs "${STATE_DIR}" "${HOST_HOME}" "${DRY_RUN}"
+save_manifest
+
+# 5. 정책 A 기반 단일 멀티플렉서(zellij | tmux | none) 확정 및 선택 설치
+caw_select_and_prepare_mux "${STACK_ROOT}" "${HOST_HOME}" "${CAW_MULTIPLEXER}" "${DRY_RUN}"
+caw_info "확정된 단일 멀티플렉서 모드: ${CAW_RESOLVED_MUX}"
+save_manifest
+
+# 6. Docker Compose 인자 조립 (compose.override.yml 및 compose.dood.yml 자동 반영)
+caw_build_compose_args "${STACK_ROOT}"
+caw_info "적용 대상 Compose 구성: ${CAW_COMPOSE_ARGS[*]}"
+
+# 7. 호스트 영속 디렉토리 및 소켓 디렉토리 사전 생성
 REQUIRED_DIRS=(
     "${CAW_CONFIG_DIR}"
     "${CAW_WORKSPACE_DIR}"
@@ -129,7 +178,6 @@ REQUIRED_DIRS=(
     "${HOST_BIN_CACHE}"
 )
 
-# 선택적 소켓 직결 모드(CAW_SHARE_MUX_SOCKET=true)일 때만 공용 소켓 디렉토리 준비
 if [[ "${CAW_SHARE_MUX_SOCKET}" == "true" ]]; then
     REQUIRED_DIRS+=(
         "${CAW_MUX_SOCKET_DIR}"
@@ -165,7 +213,7 @@ if [[ "${DRY_RUN}" -eq 0 ]]; then
     printf '%s\n' "${CAW_RESOLVED_MUX}" > "${HOST_BIN_CACHE}/active-mux"
 fi
 
-# 7. Antigravity 인증·설정 심볼릭 링크 연결 및 선택적 세션 마이그레이션
+# 8. Antigravity 인증·설정 심볼릭 링크 연결 및 선택적 세션 마이그레이션
 for shared_file in "antigravity-oauth-token" "settings.json"; do
     src_file="${HOST_HOME}/.gemini/antigravity-cli/${shared_file}"
     dst_file="${HOST_HOME}/.gemini/antigravity/${shared_file}"
@@ -191,11 +239,7 @@ if [[ "${MIGRATE_SESSIONS}" -eq 1 ]]; then
     done
 fi
 
-# 8. 호스트 CLI 래퍼 배치 유틸리티 (기존 바이너리 백업 및 비선택 멀티플렉서 링크 정리)
-AGY_BACKED_UP=0
-CAW_BACKED_UP=0
-ZELLIJ_BACKED_UP=0
-TMUX_BACKED_UP=0
+# 9. 호스트 CLI 래퍼 배치 (기존 바이너리 백업 즉시 매니페스트 반영)
 LAST_LINK_BACKED_UP=0
 
 link_wrapper_with_backup() {
@@ -235,14 +279,11 @@ unlink_wrapper_if_ours() {
     fi
 }
 
-# agy 및 caw 공용 래퍼 연결 (기존 동명 실행 파일 존재 시 백업 보존)
 link_wrapper_with_backup "agy"
-AGY_BACKED_UP="${LAST_LINK_BACKED_UP}"
+[[ "${LAST_LINK_BACKED_UP}" == "1" ]] && AGY_BACKED_UP=1
 link_wrapper_with_backup "caw"
-CAW_BACKED_UP="${LAST_LINK_BACKED_UP}"
+[[ "${LAST_LINK_BACKED_UP}" == "1" ]] && CAW_BACKED_UP=1
 
-# 기본값(CAW_SHARE_MUX_SOCKET=false, SSH 2중 인증 경계 모드)에서는 호스트 순정 멀티플렉서를 그대로 사용하며,
-# 소켓 직결(true)을 명시적으로 활성화한 경우에만 소켓 고정 래퍼를 연결함
 if [[ "${CAW_SHARE_MUX_SOCKET}" == "true" ]]; then
     case "${CAW_RESOLVED_MUX}" in
         zellij)
@@ -252,12 +293,12 @@ if [[ "${CAW_SHARE_MUX_SOCKET}" == "true" ]]; then
                 run_or_echo cp -pf "${REAL_HOST_ZELLIJ}" "${HOST_BIN_CACHE}/zellij"
             fi
             link_wrapper_with_backup "zellij"
-            ZELLIJ_BACKED_UP="${LAST_LINK_BACKED_UP}"
+            [[ "${LAST_LINK_BACKED_UP}" == "1" ]] && ZELLIJ_BACKED_UP=1
             ;;
         tmux)
             unlink_wrapper_if_ours "zellij"
             link_wrapper_with_backup "tmux"
-            TMUX_BACKED_UP="${LAST_LINK_BACKED_UP}"
+            [[ "${LAST_LINK_BACKED_UP}" == "1" ]] && TMUX_BACKED_UP=1
             ;;
         none|*)
             unlink_wrapper_if_ours "zellij"
@@ -269,12 +310,13 @@ else
     unlink_wrapper_if_ours "tmux"
     caw_info "호스트 SSH 2중 인증 경계 모드 활성화 - 호스트 순정 멀티플렉서(${CAW_RESOLVED_MUX}) 사용"
 fi
+save_manifest
 
 if ! caw_find_real_binary "${STACK_ROOT}" "${HOST_HOME}" "claude" >/dev/null 2>&1; then
     caw_warn "호스트 스탠드얼론 claude CLI(${HOST_HOME}/.local/bin/claude)가 감지되지 않았습니다."
 fi
 
-# 9. 호스트 systemd Linger 점검 (멀티플렉서 활성 모드일 때만 수행)
+# 10. 호스트 systemd Linger 점검 (멀티플렉서 활성 모드일 때만 수행)
 if [[ "${CAW_RESOLVED_MUX}" != "none" ]] && command -v loginctl >/dev/null 2>&1; then
     LINGER_VAL="$(loginctl show-user "${HOST_USER}" -p Linger --value 2>/dev/null || echo 'no')"
     if [[ "${LINGER_VAL}" != "yes" ]]; then
@@ -289,9 +331,12 @@ if [[ "${CAW_RESOLVED_MUX}" != "none" ]] && command -v loginctl >/dev/null 2>&1;
     fi
 fi
 
-# 10. 기존 동일 이름 컨테이너 충돌 검사 및 --adopt 백업 전환 처리
-BACKUP_CONTAINER=""
+# 11. 기존 동일 이름 컨테이너 충돌 검사, Compose 사전 검증 및 --adopt 백업 전환 처리
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    # 기존 컨테이너를 내리기 전에 Compose 문법·치환 검증을 먼저 통과시켜 중단 위험 최소화
+    docker compose "${CAW_COMPOSE_ARGS[@]}" --env-file "${ENV_FILE}" config -q
+    caw_info "Docker Compose 구성 검증 통과 완료."
+
     if docker container inspect "${CAW_CONTAINER_NAME}" >/dev/null 2>&1; then
         EXISTING_WORKDIR="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "${CAW_CONTAINER_NAME}" 2>/dev/null || true)"
         if [[ "${EXISTING_WORKDIR}" != "${STACK_ROOT}" ]]; then
@@ -311,37 +356,10 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
             run_or_echo docker update --restart=no "${CAW_CONTAINER_NAME}"
             run_or_echo docker stop "${CAW_CONTAINER_NAME}"
             run_or_echo docker rename "${CAW_CONTAINER_NAME}" "${BACKUP_CONTAINER}"
+            save_manifest
         fi
     fi
 
-    # 11. 롤백 매니페스트 기록
-    if [[ "${DRY_RUN}" -eq 0 ]]; then
-        if [[ -f "${MANIFEST_FILE}" ]]; then
-            caw_load_env_file "${MANIFEST_FILE}" || true
-            [[ "${CAW_STATE_AGY_BACKED_UP:-0}" == "1" ]] && AGY_BACKED_UP=1
-            [[ "${CAW_STATE_CAW_BACKED_UP:-0}" == "1" ]] && CAW_BACKED_UP=1
-            [[ "${CAW_STATE_ZELLIJ_BACKED_UP:-0}" == "1" ]] && ZELLIJ_BACKED_UP=1
-            [[ "${CAW_STATE_TMUX_BACKED_UP:-0}" == "1" ]] && TMUX_BACKED_UP=1
-            [[ -z "${BACKUP_CONTAINER}" && -n "${CAW_STATE_BACKUP_CONTAINER:-}" ]] && BACKUP_CONTAINER="${CAW_STATE_BACKUP_CONTAINER}"
-        fi
-
-        cat > "${MANIFEST_FILE}" <<EOF
-CAW_STATE_CREATED_AT="$(date +%Y-%m-%dT%H:%M:%S%z)"
-CAW_STATE_HOST_HOME="${HOST_HOME}"
-CAW_STATE_CONTAINER_NAME="${CAW_CONTAINER_NAME}"
-CAW_STATE_BACKUP_CONTAINER="${BACKUP_CONTAINER}"
-CAW_STATE_ACTIVE_MUX="${CAW_RESOLVED_MUX}"
-CAW_STATE_AGY_BACKED_UP="${AGY_BACKED_UP}"
-CAW_STATE_CAW_BACKED_UP="${CAW_BACKED_UP}"
-CAW_STATE_ZELLIJ_BACKED_UP="${ZELLIJ_BACKED_UP}"
-CAW_STATE_TMUX_BACKED_UP="${TMUX_BACKED_UP}"
-EOF
-        chmod 600 "${MANIFEST_FILE}"
-    fi
-
-    # 12. Compose 구문 검증 및 기동
-    docker compose "${CAW_COMPOSE_ARGS[@]}" --env-file "${ENV_FILE}" config -q
-    caw_info "Docker Compose 구성 검증 통과 완료."
     run_or_echo docker compose "${CAW_COMPOSE_ARGS[@]}" --env-file "${ENV_FILE}" up -d
 else
     if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -352,4 +370,4 @@ else
     fi
 fi
 
-caw_info "CAW 작업 완료 (DRY_RUN=${DRY_RUN}, MUX=${CAW_RESOLVED_MUX}). 'caw doctor' 및 'caw attach'로 환경을 확인하세요."
+caw_info "CAW 작업 완료 (DRY_RUN=${DRY_RUN}, MUX=${CAW_RESOLVED_MUX}). 'caw doctor' 및 'caw status'로 환경을 확인하세요."

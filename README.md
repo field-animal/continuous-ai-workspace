@@ -1,6 +1,6 @@
 # CAW (Continuous AI Workspace)
 
-**버전:** `0.1.5-261116`
+**버전:** `0.1.6-261116`
 
 **CAW (`continuous-ai-workspace`)** 는 클라이언트 기기(노트북·데스크톱)의 전원 종료, 절전 진입, 또는 기기를 소지하지 않은 채 다른 장소의 새로운 머신으로 이동하더라도 **동일한 리눅스 호스트 위에서 AI 에이전트(Google Antigravity, Claude Code)와 웹 IDE(`code-server`), 터미널 멀티플렉서(`tmux` 또는 `zellij`) 세션을 끊김 없이 이어가기 위한 범용 인프라 구성 패키지**입니다.
 
@@ -30,7 +30,7 @@
 
 ```text
 continuous-ai-workspace/
-├── VERSION                          # 패키지 버전 (0.1.5-261116)
+├── VERSION                          # 패키지 버전 (0.1.6-261116)
 ├── .env.example                     # 서버별 환경변수 템플릿 (사용자·경로·멀티플렉서 중립)
 ├── .gitignore                       # 시크릿, 로컬 오버라이드, 상용 바이너리, 백업 커밋 차단
 ├── docker-compose.yml               # 코어 구성 (기본 SSH 2중 인증 경계, 소켓 직결은 주석 분리)
@@ -38,7 +38,8 @@ continuous-ai-workspace/
 ├── compose.dood.yml                 # [선택 모듈] 호스트 Docker(DooD) 연동
 ├── lib/
 │   ├── common.sh                    # eval 없는 .env 파서, 자동 기본값 치환, 경로·시크릿·잠금 검증
-│   └── multiplexer.sh               # 멀티플렉서 단일 감지, 미설치 선택 설치(정책 A) 모듈
+│   ├── multiplexer.sh               # 멀티플렉서 단일 감지, 미설치 선택 설치(정책 A) 모듈
+│   └── backup.sh                    # 최초 도입 전 에이전트 DB·세션 디렉토리 백업 및 실패 복원 모듈
 ├── cont-init.d/
 │   ├── 05-cli-links.sh              # 디렉토리 마운트(/opt/caw/bin) 기반 공용 CLI 심볼릭 링크 연결
 │   ├── 10-docker-gid.sh             # DooD 활성화 시 소켓 GID 동기화
@@ -101,9 +102,15 @@ chmod 600 .env
 ./scripts/install.sh --adopt --migrate-cli-sessions --dry-run
 ./scripts/install.sh --adopt --migrate-cli-sessions
 
-# 문제 발생 시 언제든 즉시 이전 컨테이너와 바이너리로 원복 가능
+# 도입 실패 또는 이상 발생 시 컨테이너·바이너리 + 에이전트 DB·세션 분리 원본까지 1-커맨드 원복
+# (장기 운영 후 단순 철거 시 누적 대화를 그대로 남기려면 --keep-sessions 옵션 추가)
 ./scripts/rollback.sh
 ```
+
+### 시나리오 C: 다른 리눅스 서버 또는 다른 경로로 이관할 때의 유의 사항
+
+- **환경 구성 자체**: 실행 계정(`UID`, `GID`, `$USER`, `$HOME`) 자동 치환 구조이므로 새 서버의 계정명이나 패키지 설치 경로가 달라도 `.env` 및 `./scripts/install.sh` 실행만으로 즉시 정상 구동됩니다.
+- **과거 에이전트 대화 기록 이관 시 경로 주의**: Antigravity의 대화 DB(`~/.gemini/antigravity/*.db`) 내부에는 워크스페이스 절대경로가 바이너리(Protobuf) 형태로 기록되어 있어 DB 파일을 직접 문자열 치환하면 손상됩니다. 새 서버에서 계정명이나 워크스페이스 상위 경로가 달라졌는데 과거 대화 목록까지 그대로 이어받아야 할 경우에는 DB를 수정하지 말고 새 서버에 **구 경로 -> 신 경로 심볼릭 링크(`ln -s <신경로> <구경로>`)**를 생성하거나, 처음부터 계정 무관 공용 경로(예: `/srv/workspace`)를 워크스페이스 표준으로 사용하십시오.
 
 ---
 
