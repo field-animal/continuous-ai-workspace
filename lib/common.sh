@@ -60,9 +60,10 @@ caw_validate_path() {
 }
 
 # eval 및 source 없이 .env 파일을 안전하게 파싱하여 환경변수로 적재하는 함수
-# 셸 명령어 주입(Command Injection) 방지를 위해 허용된 키 형식만 추출함
+# 인자: $1=환경변수 파일 경로, $2=미설정 변수만 적재 여부(1 이면 이미 설정된 환경변수 및 빈 값 덮어쓰기 생략)
 caw_load_env_file() {
     local env_file="${1:-}"
+    local only_if_unset="${2:-0}"
     if [[ ! -f "${env_file}" ]]; then
         caw_err "환경변수 파일을 찾을 수 없습니다: ${env_file}"
         return 1
@@ -105,6 +106,12 @@ caw_load_env_file() {
             fi
             # Docker Compose 규약과 동일하게 이중 달러($$) 이스케이프를 단일 달러($)로 복원
             value="${value//\$\$/\$}"
+        fi
+
+        if [[ "${only_if_unset}" == "1" ]]; then
+            if [[ -z "${value}" || -n "${!key:-}" ]]; then
+                continue
+            fi
         fi
 
         export "${key}=${value}"

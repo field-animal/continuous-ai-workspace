@@ -20,6 +20,13 @@ map $http_upgrade $connection_upgrade {
     ''      close;
 }
 
+# 메인 IDE 도메인에는 SAMEORIGIN 적용, 서브도메인 포트 프록시(ide-<port>)는
+# 교차 서브도메인 웹뷰 iframe 허용을 위해 빈 문자열 지정 (Nginx는 빈 값 헤더를 자동 생략함)
+map $host $caw_frame_options {
+    default                      "SAMEORIGIN";
+    ~^ide-[0-9]+\.example\.com$  "";
+}
+
 server {
     listen 443 ssl http2;
     # 메인 IDE 도메인 및 1단계 서브도메인 포트 프록시(ide-3000.example.com 등) 동시 수용
@@ -28,10 +35,11 @@ server {
     ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
 
-    # 보안 응답 헤더
+    # 보안 응답 헤더 (X-Frame-Options 는 위 map 분기에 따라 메인 도메인에만 부가됨)
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header X-Frame-Options $caw_frame_options always;
 
     # 대용량 파일 업로드 및 긴 에이전트 스트리밍 타임아웃 보장
     client_max_body_size 50m;

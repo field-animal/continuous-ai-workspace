@@ -193,6 +193,7 @@ fi
 
 # 8. 호스트 CLI 래퍼 배치 유틸리티 (기존 바이너리 백업 및 비선택 멀티플렉서 링크 정리)
 AGY_BACKED_UP=0
+CAW_BACKED_UP=0
 ZELLIJ_BACKED_UP=0
 TMUX_BACKED_UP=0
 LAST_LINK_BACKED_UP=0
@@ -234,10 +235,11 @@ unlink_wrapper_if_ours() {
     fi
 }
 
-# agy 및 caw 공용 래퍼 연결
+# agy 및 caw 공용 래퍼 연결 (기존 동명 실행 파일 존재 시 백업 보존)
 link_wrapper_with_backup "agy"
 AGY_BACKED_UP="${LAST_LINK_BACKED_UP}"
-run_or_echo ln -snf "${STACK_ROOT}/bin/caw" "${HOST_HOME}/.local/bin/caw"
+link_wrapper_with_backup "caw"
+CAW_BACKED_UP="${LAST_LINK_BACKED_UP}"
 
 # 기본값(CAW_SHARE_MUX_SOCKET=false, SSH 2중 인증 경계 모드)에서는 호스트 순정 멀티플렉서를 그대로 사용하며,
 # 소켓 직결(true)을 명시적으로 활성화한 경우에만 소켓 고정 래퍼를 연결함
@@ -317,6 +319,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
         if [[ -f "${MANIFEST_FILE}" ]]; then
             caw_load_env_file "${MANIFEST_FILE}" || true
             [[ "${CAW_STATE_AGY_BACKED_UP:-0}" == "1" ]] && AGY_BACKED_UP=1
+            [[ "${CAW_STATE_CAW_BACKED_UP:-0}" == "1" ]] && CAW_BACKED_UP=1
             [[ "${CAW_STATE_ZELLIJ_BACKED_UP:-0}" == "1" ]] && ZELLIJ_BACKED_UP=1
             [[ "${CAW_STATE_TMUX_BACKED_UP:-0}" == "1" ]] && TMUX_BACKED_UP=1
             [[ -z "${BACKUP_CONTAINER}" && -n "${CAW_STATE_BACKUP_CONTAINER:-}" ]] && BACKUP_CONTAINER="${CAW_STATE_BACKUP_CONTAINER}"
@@ -329,6 +332,7 @@ CAW_STATE_CONTAINER_NAME="${CAW_CONTAINER_NAME}"
 CAW_STATE_BACKUP_CONTAINER="${BACKUP_CONTAINER}"
 CAW_STATE_ACTIVE_MUX="${CAW_RESOLVED_MUX}"
 CAW_STATE_AGY_BACKED_UP="${AGY_BACKED_UP}"
+CAW_STATE_CAW_BACKED_UP="${CAW_BACKED_UP}"
 CAW_STATE_ZELLIJ_BACKED_UP="${ZELLIJ_BACKED_UP}"
 CAW_STATE_TMUX_BACKED_UP="${TMUX_BACKED_UP}"
 EOF

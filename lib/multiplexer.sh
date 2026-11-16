@@ -66,49 +66,81 @@ caw_install_host_tmux() {
     fi
 }
 
-# 호스트 ~/.local/bin 에 공식 정적 zellij 바이너리를 다운로드·설치하는 함수 (sudo 불필요)
+# 호스트 ~/.local/bin 에 공식 정적 zellij 바이너리를 버전 고정 및 SHA-256 무결성 검증 후 설치하는 함수
 caw_install_host_zellij() {
     local host_home="$1"
     local dry_run="${2:-0}"
+    local zellij_ver="${CAW_ZELLIJ_VERSION:-v0.45.1}"
     local arch
     arch="$(uname -m)"
 
+    if [[ ! "${zellij_ver}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        caw_err "유효하지 않은 CAW_ZELLIJ_VERSION 형식입니다 (예: v0.45.1): ${zellij_ver}"
+        return 1
+    fi
+
     local target_arch=""
+    local pinned_v0451_sha256=""
     case "${arch}" in
-        x86_64|amd64)   target_arch="x86_64" ;;
-        aarch64|arm64)  target_arch="aarch64" ;;
+        x86_64|amd64)
+            target_arch="x86_64"
+            pinned_v0451_sha256="40bcc2e03f5d5ae8e054e39f676081fe12ab70871506996ba595834c3718eefc"
+            ;;
+        aarch64|arm64)
+            target_arch="aarch64"
+            pinned_v0451_sha256="05f0802afadd53f8db9514e7cae53c9ae8432fed1b35b8294aa816ee3044a16b"
+            ;;
         *)
             caw_err "자동 설치를 지원하지 않는 CPU 아키텍처입니다: ${arch}"
             return 1
             ;;
     esac
 
-    local url="https://github.com/zellij-org/zellij/releases/latest/download/zellij-${target_arch}-unknown-linux-musl.tar.gz"
+    local base_url="https://github.com/zellij-org/zellij/releases/download/${zellij_ver}"
+    local archive_name="zellij-${target_arch}-unknown-linux-musl.tar.gz"
+    local url="${base_url}/${archive_name}"
+    local sha_url="${base_url}/zellij-${target_arch}-unknown-linux-musl.sha256sum"
     local dest="${host_home}/.local/bin/zellij"
 
     if [[ "${dry_run}" == "1" ]]; then
-        caw_info "[DRY-RUN] 공식 정적 바이너리 다운로드 예정: ${url} -> ${dest}"
+        caw_info "[DRY-RUN] 공식 정적 바이너리 다운로드 및 SHA-256 검증 예정 (${zellij_ver}): ${url} -> ${dest}"
         return 0
     fi
 
-    if ! command -v curl >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then
-        caw_err "zellij 자동 설치를 위해 curl 및 tar 명령이 필요합니다."
+    if ! command -v curl >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then
+        caw_err "zellij 자동 설치 및 무결성 검증을 위해 curl, tar, sha256sum 명령이 필요합니다."
         return 1
     fi
 
     local tmp_dir
     tmp_dir="$(mktemp -d)"
-    # 함수 종료 시 임시 디렉토리 자동 정리
     trap 'rm -rf "${tmp_dir}"' RETURN
 
-    caw_info "공식 GitHub 릴리스에서 zellij(${target_arch}) 정적 바이너리를 내려받습니다..."
-    curl -fsSL --proto '=https' --tlsv1.2 "${url}" -o "${tmp_dir}/zellij.tar.gz"
+    caw_info "공식 GitHub 릴리스에서 zellij ${zellij_ver}(${target_arch}) 정적 아카이브를 내려받습니다..."
+    curl -fsSL --proto '=https' --tlsv1.2 "${url}" -o "${tmp_dir}/${archive_name}"
 
-    # 경로 이탈(Tar Slip) 방지를 위해 단일 파일명(zellij)만 명시 추출
-    tar -xzf "${tmp_dir}/zellij.tar.gz" -C "${tmp_dir}" zellij
+    local expected_sha=""
+    if [[ "${zellij_ver}" == "v0.45.1" ]]; then
+        expected_sha="${pinned_v0451_sha256}"
+    else
+        curl -fsSL --proto '=https' --tlsv1.2 "${sha_url}" -o "${tmp_dir}/release.sha256sum"
+        expected_sha="$(awk '{print $1; exit}' "${tmp_dir}/release.sha256sum")"
+        if [[ ! "${expected_sha}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            caw_err "공식 체크섬 파일에서 유효한 SHA-256 해시를 추출하지 못했습니다: ${sha_url}"
+            return 1
+        fi
+    fi
+
+    if ! printf '%s  %s\n' "${expected_sha}" "${tmp_dir}/${archive_name}" | sha256sum -c - >/dev/null; then
+        caw_err "다운로드된 zellij 아카이브의 SHA-256 체크섬이 일치하지 않아 설치를 중단합니다."
+        return 1
+    fi
+
+    # 경로 이탈(Tar Slip) 방지를 위해 검증 완료 후 단일 파일명(zellij)만 명시 추출
+    tar -xzf "${tmp_dir}/${archive_name}" -C "${tmp_dir}" zellij
     mkdir -p "${host_home}/.local/bin"
     install -m 0755 "${tmp_dir}/zellij" "${dest}"
-    caw_info "호스트 zellij 설치 완료: ${dest}"
+    caw_info "호스트 zellij(${zellij_ver}) SHA-256 검증 및 설치 완료: ${dest}"
 }
 
 # 정책 A 기반 활성 멀티플렉서 1종 결정 및 미설치 시 선택 설치 함수

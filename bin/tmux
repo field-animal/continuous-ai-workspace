@@ -9,7 +9,16 @@
 set -euo pipefail
 
 SELF_REAL="$(realpath "${BASH_SOURCE[0]}")"
-HOST_HOME_DIR="${CAW_HOST_HOME:-${HOME}}"
+SCRIPT_DIR="$(cd "$(dirname "${SELF_REAL}")" && pwd)"
+STACK_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+if [[ ! -f "/.dockerenv" && -f "${STACK_ROOT}/lib/common.sh" && -f "${STACK_ROOT}/.env" ]]; then
+    # shellcheck source=../lib/common.sh
+    source "${STACK_ROOT}/lib/common.sh"
+    caw_load_env_file "${STACK_ROOT}/.env" 1 || true
+fi
+
+HOST_HOME_DIR="${CAW_HOST_HOME:-${HOST_HOME:-${HOME}}}"
 MUX_ROOT="${CAW_MUX_SOCKET_DIR:-${HOST_HOME_DIR}/.cache/caw/mux}"
 
 export TMUX_TMPDIR="${TMUX_TMPDIR:-${MUX_ROOT}/tmux}"
