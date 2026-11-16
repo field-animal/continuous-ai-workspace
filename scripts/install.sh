@@ -18,6 +18,8 @@ source "${STACK_ROOT}/lib/common.sh"
 source "${STACK_ROOT}/lib/multiplexer.sh"
 # shellcheck source=../lib/backup.sh
 source "${STACK_ROOT}/lib/backup.sh"
+# shellcheck source=../lib/preflight.sh
+source "${STACK_ROOT}/lib/preflight.sh"
 
 DRY_RUN=0
 ADOPT_MODE=0
@@ -97,9 +99,12 @@ fi
 caw_load_env_file "${ENV_FILE}"
 caw_verify_secrets
 
-# 2. 미선언 항목 실행 사용자 기준 자동 치환 및 경로 경계 검증
+# 2. 미선언 항목 실행 사용자 기준 자동 치환, 경로 경계 검증 및 Compose 인자 조립
 caw_resolve_runtime_defaults
 caw_info "런타임 매핑 기준: USER=${HOST_USER}(${PUID}:${PGID}), HOME=${HOST_HOME}, WORKSPACE=${CAW_WORKSPACE_DIR}"
+
+caw_build_compose_args "${STACK_ROOT}"
+caw_info "적용 대상 Compose 구성: ${CAW_COMPOSE_ARGS[*]}"
 
 # 3. 활성 에이전트 대화 잠금(.lock) 점검 (작업 중 강제 재기동 원천 차단)
 if ! caw_check_no_active_locks "${HOST_HOME}"; then
@@ -108,7 +113,7 @@ if ! caw_check_no_active_locks "${HOST_HOME}"; then
     exit 1
 fi
 
-# 4. 최초 도입 백업 및 롤백 매니페스트 선행 기록 준비 (변경 작업 도중 중단되어도 즉시 복구 보장)
+# 4. 롤백 매니페스트 상태 초기화 및 저장 유틸리티 준비
 STATE_DIR="${STACK_ROOT}/.caw-state"
 HOST_BIN_CACHE="${STATE_DIR}/host-bin"
 MANIFEST_FILE="${STATE_DIR}/manifest.env"
@@ -120,8 +125,11 @@ TMUX_BACKED_UP=0
 BACKUP_CONTAINER=""
 CAW_RESOLVED_MUX="none"
 
+# 아직 백업 생성 전이라도 현재 호스트의 도입 전 디렉토리 유무를 초기 판별
+[[ -d "${HOST_HOME}/.gemini/antigravity" ]] && CAW_HAD_IDE_DIR=1
+[[ -d "${HOST_HOME}/.gemini/antigravity-cli" ]] && CAW_HAD_CLI_DIR=1
+
 if [[ -f "${MANIFEST_FILE}" ]]; then
-    # 재실행 시 최초 도입 시점의 백업 메타데이터 유실 방지
     caw_load_env_file "${MANIFEST_FILE}" 1 || true
     [[ "${CAW_STATE_AGY_BACKED_UP:-0}" == "1" ]] && AGY_BACKED_UP=1
     [[ "${CAW_STATE_CAW_BACKED_UP:-0}" == "1" ]] && CAW_BACKED_UP=1
@@ -154,20 +162,58 @@ EOF
     mv -f "${MANIFEST_FILE}.tmp" "${MANIFEST_FILE}"
 }
 
-# 디렉토리 생성·링크 변경 전에 최초 에이전트 DB·세션 원본 백업 및 매니페스트 선행 기록 수행
+# 5. Docker 사전 검증(Compose 구문·포트 충돌·기존 마운트 호환성) 및 기존 컨테이너 선(先)정지
+DOCKER_READY=0
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    DOCKER_READY=1
+    docker compose "${CAW_COMPOSE_ARGS[@]}" --env-file "${ENV_FILE}" config -q
+    caw_info "Docker Compose 구성 검증 통과 완료."
+
+    caw_check_port_conflict "${CAW_CONTAINER_NAME}" "${CAW_BIND_ADDR:-127.0.0.1}" "${CAW_PORT:-8443}"
+
+    if docker container inspect "${CAW_CONTAINER_NAME}" >/dev/null 2>&1; then
+        EXISTING_WORKDIR="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "${CAW_CONTAINER_NAME}" 2>/dev/null || true)"
+        if [[ "${EXISTING_WORKDIR}" != "${STACK_ROOT}" ]]; then
+            if [[ "${ADOPT_MODE}" -ne 1 ]]; then
+                caw_err "타 경로(${EXISTING_WORKDIR:-수동실행})에서 구동 중인 '${CAW_CONTAINER_NAME}' 컨테이너가 이미 존재합니다."
+                caw_info "기존 컨테이너를 보존 백업하고 전환하려면 '--adopt' 옵션을 추가해 실행하세요."
+                exit 1
+            fi
+
+            # 정지 전에 기존 컨테이너의 /config 및 .gemini 마운트 호환성 검증 (가려짐 오동작 사전 차단)
+            caw_inspect_adopt_compatibility "${CAW_CONTAINER_NAME}" "${CAW_CONFIG_DIR}" "${HOST_HOME}"
+
+            BACKUP_CONTAINER="${CAW_CONTAINER_NAME}-caw-backup"
+            if docker container inspect "${BACKUP_CONTAINER}" >/dev/null 2>&1; then
+                caw_err "백업 대상 컨테이너 이름('${BACKUP_CONTAINER}')이 이미 존재합니다. 상태를 먼저 확인하세요."
+                exit 1
+            fi
+
+            # 백그라운드 agy --hub 프로세스의 SQLite WAL 플러시·잠금 해제를 위해 tar 백업 전에 먼저 정상 종료 수행
+            caw_info "기존 컨테이너('${CAW_CONTAINER_NAME}')를 정상 중지하고 백업 이름('${BACKUP_CONTAINER}')으로 보존합니다."
+            run_or_echo docker update --restart=no "${CAW_CONTAINER_NAME}"
+            run_or_echo docker stop "${CAW_CONTAINER_NAME}"
+            run_or_echo docker rename "${CAW_CONTAINER_NAME}" "${BACKUP_CONTAINER}"
+            save_manifest
+        fi
+    fi
+elif [[ "${DRY_RUN}" -eq 1 ]]; then
+    caw_warn "[DRY-RUN] 현재 셸에서 Docker 데몬 소켓에 접근할 수 없어 컨테이너 사전 검사를 건너뛰었습니다."
+else
+    caw_err "Docker 데몬에 연결할 수 없습니다. Docker 서비스 및 계정 권한을 확인하세요."
+    exit 1
+fi
+
+# 6. 모든 에이전트 프로세스가 완전히 정지된 상태에서 DB·세션 원본 정지 백업(Cold Backup) 수행
 caw_backup_initial_agent_dirs "${STATE_DIR}" "${HOST_HOME}" "${DRY_RUN}"
 save_manifest
 
-# 5. 정책 A 기반 단일 멀티플렉서(zellij | tmux | none) 확정 및 선택 설치
+# 7. 정책 A 기반 단일 멀티플렉서(zellij | tmux | none) 확정 및 선택 설치
 caw_select_and_prepare_mux "${STACK_ROOT}" "${HOST_HOME}" "${CAW_MULTIPLEXER}" "${DRY_RUN}"
 caw_info "확정된 단일 멀티플렉서 모드: ${CAW_RESOLVED_MUX}"
 save_manifest
 
-# 6. Docker Compose 인자 조립 (compose.override.yml 및 compose.dood.yml 자동 반영)
-caw_build_compose_args "${STACK_ROOT}"
-caw_info "적용 대상 Compose 구성: ${CAW_COMPOSE_ARGS[*]}"
-
-# 7. 호스트 영속 디렉토리 및 소켓 디렉토리 사전 생성
+# 8. 호스트 영속 디렉토리 및 소켓 디렉토리 사전 생성
 REQUIRED_DIRS=(
     "${CAW_CONFIG_DIR}"
     "${CAW_WORKSPACE_DIR}"
@@ -213,7 +259,7 @@ if [[ "${DRY_RUN}" -eq 0 ]]; then
     printf '%s\n' "${CAW_RESOLVED_MUX}" > "${HOST_BIN_CACHE}/active-mux"
 fi
 
-# 8. Antigravity 인증·설정 심볼릭 링크 연결 및 선택적 세션 마이그레이션
+# 9. Antigravity 인증·설정 심볼릭 링크 연결 및 선택적 세션 마이그레이션
 for shared_file in "antigravity-oauth-token" "settings.json"; do
     src_file="${HOST_HOME}/.gemini/antigravity-cli/${shared_file}"
     dst_file="${HOST_HOME}/.gemini/antigravity/${shared_file}"
@@ -239,7 +285,7 @@ if [[ "${MIGRATE_SESSIONS}" -eq 1 ]]; then
     done
 fi
 
-# 9. 호스트 CLI 래퍼 배치 (기존 바이너리 백업 즉시 매니페스트 반영)
+# 10. 호스트 CLI 래퍼 배치 (기존 바이너리 백업 즉시 매니페스트 반영)
 LAST_LINK_BACKED_UP=0
 
 link_wrapper_with_backup() {
@@ -316,7 +362,7 @@ if ! caw_find_real_binary "${STACK_ROOT}" "${HOST_HOME}" "claude" >/dev/null 2>&
     caw_warn "호스트 스탠드얼론 claude CLI(${HOST_HOME}/.local/bin/claude)가 감지되지 않았습니다."
 fi
 
-# 10. 호스트 systemd Linger 점검 (멀티플렉서 활성 모드일 때만 수행)
+# 11. 호스트 systemd Linger 점검 (멀티플렉서 활성 모드일 때만 수행)
 if [[ "${CAW_RESOLVED_MUX}" != "none" ]] && command -v loginctl >/dev/null 2>&1; then
     LINGER_VAL="$(loginctl show-user "${HOST_USER}" -p Linger --value 2>/dev/null || echo 'no')"
     if [[ "${LINGER_VAL}" != "yes" ]]; then
@@ -331,43 +377,9 @@ if [[ "${CAW_RESOLVED_MUX}" != "none" ]] && command -v loginctl >/dev/null 2>&1;
     fi
 fi
 
-# 11. 기존 동일 이름 컨테이너 충돌 검사, Compose 사전 검증 및 --adopt 백업 전환 처리
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    # 기존 컨테이너를 내리기 전에 Compose 문법·치환 검증을 먼저 통과시켜 중단 위험 최소화
-    docker compose "${CAW_COMPOSE_ARGS[@]}" --env-file "${ENV_FILE}" config -q
-    caw_info "Docker Compose 구성 검증 통과 완료."
-
-    if docker container inspect "${CAW_CONTAINER_NAME}" >/dev/null 2>&1; then
-        EXISTING_WORKDIR="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "${CAW_CONTAINER_NAME}" 2>/dev/null || true)"
-        if [[ "${EXISTING_WORKDIR}" != "${STACK_ROOT}" ]]; then
-            if [[ "${ADOPT_MODE}" -ne 1 ]]; then
-                caw_err "타 경로(${EXISTING_WORKDIR:-수동실행})에서 구동 중인 '${CAW_CONTAINER_NAME}' 컨테이너가 이미 존재합니다."
-                caw_info "기존 컨테이너를 보존 백업하고 전환하려면 '--adopt' 옵션을 추가해 실행하세요."
-                exit 1
-            fi
-
-            BACKUP_CONTAINER="${CAW_CONTAINER_NAME}-caw-backup"
-            if docker container inspect "${BACKUP_CONTAINER}" >/dev/null 2>&1; then
-                caw_err "백업 대상 컨테이너 이름('${BACKUP_CONTAINER}')이 이미 존재합니다. 상태를 먼저 확인하세요."
-                exit 1
-            fi
-
-            caw_info "기존 컨테이너('${CAW_CONTAINER_NAME}')를 중지하고 백업 이름('${BACKUP_CONTAINER}')으로 보존합니다."
-            run_or_echo docker update --restart=no "${CAW_CONTAINER_NAME}"
-            run_or_echo docker stop "${CAW_CONTAINER_NAME}"
-            run_or_echo docker rename "${CAW_CONTAINER_NAME}" "${BACKUP_CONTAINER}"
-            save_manifest
-        fi
-    fi
-
+# 12. 신규 CAW 컨테이너 기동
+if [[ "${DOCKER_READY}" -eq 1 ]]; then
     run_or_echo docker compose "${CAW_COMPOSE_ARGS[@]}" --env-file "${ENV_FILE}" up -d
-else
-    if [[ "${DRY_RUN}" -eq 1 ]]; then
-        caw_warn "[DRY-RUN] 현재 셸에서 Docker 데몬 소켓에 접근할 수 없어 컨테이너 검사를 건너뛰었습니다 (정적 검증 완료)."
-    else
-        caw_err "Docker 데몬에 연결할 수 없습니다. Docker 서비스 및 계정 권한을 확인하세요."
-        exit 1
-    fi
 fi
 
 caw_info "CAW 작업 완료 (DRY_RUN=${DRY_RUN}, MUX=${CAW_RESOLVED_MUX}). 'caw doctor' 및 'caw status'로 환경을 확인하세요."

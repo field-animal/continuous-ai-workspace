@@ -1,6 +1,6 @@
 # CAW (Continuous AI Workspace)
 
-**버전:** `0.1.6-261116`
+**버전:** `0.1.7-261116`
 
 **CAW (`continuous-ai-workspace`)** 는 클라이언트 기기(노트북·데스크톱)의 전원 종료, 절전 진입, 또는 기기를 소지하지 않은 채 다른 장소의 새로운 머신으로 이동하더라도 **동일한 리눅스 호스트 위에서 AI 에이전트(Google Antigravity, Claude Code)와 웹 IDE(`code-server`), 터미널 멀티플렉서(`tmux` 또는 `zellij`) 세션을 끊김 없이 이어가기 위한 범용 인프라 구성 패키지**입니다.
 
@@ -30,7 +30,7 @@
 
 ```text
 continuous-ai-workspace/
-├── VERSION                          # 패키지 버전 (0.1.6-261116)
+├── VERSION                          # 패키지 버전 (0.1.7-261116)
 ├── .env.example                     # 서버별 환경변수 템플릿 (사용자·경로·멀티플렉서 중립)
 ├── .gitignore                       # 시크릿, 로컬 오버라이드, 상용 바이너리, 백업 커밋 차단
 ├── docker-compose.yml               # 코어 구성 (기본 SSH 2중 인증 경계, 소켓 직결은 주석 분리)
@@ -39,7 +39,8 @@ continuous-ai-workspace/
 ├── lib/
 │   ├── common.sh                    # eval 없는 .env 파서, 자동 기본값 치환, 경로·시크릿·잠금 검증
 │   ├── multiplexer.sh               # 멀티플렉서 단일 감지, 미설치 선택 설치(정책 A) 모듈
-│   └── backup.sh                    # 최초 도입 전 에이전트 DB·세션 디렉토리 백업 및 실패 복원 모듈
+│   ├── backup.sh                    # 최초 도입 전 에이전트 DB·세션 디렉토리 백업 및 실패 복원 모듈
+│   └── preflight.sh                 # 기존 컨테이너 마운트 가려짐 및 포트 충돌 사전 검증 모듈
 ├── cont-init.d/
 │   ├── 05-cli-links.sh              # 디렉토리 마운트(/opt/caw/bin) 기반 공용 CLI 심볼릭 링크 연결
 │   ├── 10-docker-gid.sh             # DooD 활성화 시 소켓 GID 동기화
