@@ -90,11 +90,21 @@ caw_load_env_file() {
             return 1
         fi
 
-        # 양끝 따옴표 제거 (명령 치환 실행 없음)
-        if [[ "${value}" =~ ^\"(.*)\"$ ]]; then
+        # 양끝 따옴표 처리 및 Docker Compose .env 파서와의 $ 기호 해석 정합성 일치
+        if [[ "${value}" =~ ^\'(.*)\'$ ]]; then
+            # 작은따옴표('...')는 내부 $ 문자를 순수 리터럴로 보존
             value="${BASH_REMATCH[1]}"
-        elif [[ "${value}" =~ ^\'(.*)\'$ ]]; then
-            value="${BASH_REMATCH[1]}"
+        else
+            if [[ "${value}" =~ ^\"(.*)\"$ ]]; then
+                value="${BASH_REMATCH[1]}"
+            fi
+            # 작은따옴표 없이 단일 $ 가 포함된 해시는 docker compose 직접 실행 시 =19... 로 훼손되므로 즉시 차단(Fail-Close)
+            if [[ "${key}" == "CAW_HASHED_PASSWORD" && "${value}" == *\$* && "${value}" != *\$\$* ]]; then
+                caw_err ".env 의 CAW_HASHED_PASSWORD 는 작은따옴표('...')로 감싸야 합니다 (예: CAW_HASHED_PASSWORD='\$argon2id\$...')."
+                return 1
+            fi
+            # Docker Compose 규약과 동일하게 이중 달러($$) 이스케이프를 단일 달러($)로 복원
+            value="${value//\$\$/\$}"
         fi
 
         export "${key}=${value}"
@@ -139,7 +149,7 @@ caw_resolve_runtime_defaults() {
            CAW_MUX_SOCKET_DIR CAW_MULTIPLEXER CAW_SHARE_MUX_SOCKET CAW_SESSION_NAME CAW_CONTAINER_NAME
 }
 
-# 인증 시크릿 유효성 검증 (기본 예시값이나 빈 비밀번호 기동 원천 차단 - Fail Close)
+# 인증 시크릿 유효성 검증 (기본 예시값이나 빈 비밀번호·손상된 해시 기동 원천 차단 - Fail Close)
 caw_verify_secrets() {
     local pw="${CAW_PASSWORD:-}"
     local hpw="${CAW_HASHED_PASSWORD:-}"
@@ -149,7 +159,12 @@ caw_verify_secrets() {
         return 1
     fi
 
-    if [[ -z "${hpw}" ]]; then
+    if [[ -n "${hpw}" ]]; then
+        if [[ "${hpw}" != \$argon2* ]]; then
+            caw_err "유효하지 않거나 훼손된 Argon2 해시 형식입니다 (\$argon2... 시작 필수). .env 에서 작은따옴표('...')로 감쌌는지 확인하세요."
+            return 1
+        fi
+    else
         if [[ "${pw}" == "change_me"* || "${pw}" == "password" || "${#pw}" -lt 8 ]]; then
             caw_err "안전하지 않은 CAW_PASSWORD 입니다. 최소 8자(권장 12자) 이상의 고유 비밀번호를 설정하세요."
             return 1

@@ -77,7 +77,11 @@ run_or_echo() {
     fi
 }
 
-# 1. 환경변수 파일 권한 보안 강제 및 안전한 파싱
+# 1. 환경변수 파일 권한 보안 강제 및 안전한 파싱 (심볼릭 링크 우회 방어 포함)
+if [[ -L "${ENV_FILE}" ]]; then
+    caw_err "보안상 심볼릭 링크 형태의 .env 파일은 허용되지 않습니다: ${ENV_FILE}"
+    exit 1
+fi
 if [[ ! -f "${ENV_FILE}" ]]; then
     caw_err "환경변수 파일이 없습니다: ${ENV_FILE}"
     caw_info "먼저 'cp .env.example .env && chmod 600 .env' 실행 후 값을 설정하세요."

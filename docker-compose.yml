@@ -58,13 +58,11 @@ services:
       # - ${HOST_HOME:-${HOME}}/.config/zellij:/config/.config/zellij
       # - ${HOST_HOME:-${HOME}}/.config/tmux:/config/.config/tmux
       # - ./.caw-state/host-bin:/opt/caw/host-bin:ro
-      # - ./bin:/opt/caw/bin:ro
 
-      # 4. 호스트 로컬 바이너리 및 AI 에이전트 공용 CLI 래퍼 읽기 전용 연동 (유닉스 소켓 미포함)
+      # 4. 호스트 로컬 바이너리 및 AI 에이전트 공용 CLI 래퍼 디렉토리 읽기 전용 연동 (유닉스 소켓 미포함)
+      # 단일 파일 대신 디렉토리 마운트 + 05-cli-links.sh 심볼릭 링크를 사용하여 git pull 즉시 반영 보장
       - ${HOST_HOME:-${HOME}}/.local/bin:${HOST_HOME:-${HOME}}/.local/bin:ro
-      - ./bin/agy:/usr/local/bin/agy:ro
-      - ./bin/claude:/usr/local/bin/claude:ro
-      - ./bin/caw:/usr/local/bin/caw:ro
+      - ./bin:/opt/caw/bin:ro
 
       # 5. 기기 고유 식별자 및 Git 전역 설정 읽기 전용 매핑
       - /etc/machine-id:/etc/machine-id:ro

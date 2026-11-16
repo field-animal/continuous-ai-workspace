@@ -38,8 +38,13 @@ for ext_id in "${REQUIRED_EXTENSIONS[@]}"; do
     fi
 
     echo "[caw-init:20-extensions] 공식 갤러리에서 확장 설치 시작: ${ext_id}"
-    s6-setuidgid "${TARGET_USER}" "${CODE_SERVER_BIN}" \
+    # 일시적 오프라인·갤러리 장애 시에도 code-server 본체 기동이 무한 재시작 루프에 빠지지 않도록 방어
+    if s6-setuidgid "${TARGET_USER}" "${CODE_SERVER_BIN}" \
         --user-data-dir /config/data \
         --extensions-dir "${EXT_DIR}" \
-        --install-extension "${ext_id}"
+        --install-extension "${ext_id}"; then
+        echo "[caw-init:20-extensions] 설치 완료: ${ext_id}"
+    else
+        echo "[caw-init:20-extensions] [WARN] 확장 자동 설치 실패(${ext_id}) - 코어 기동은 계속 진행하며 웹 UI 또는 다음 기동 시 재시도 가능합니다." >&2
+    fi
 done
