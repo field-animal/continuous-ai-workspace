@@ -5,11 +5,17 @@
 #   포트 포워딩(ide-<port>.example.com), Antigravity 웹뷰가 동작하도록 구성
 #
 # [Nginx Proxy Manager(NPM) GUI 설정 요약]
-#   1) Proxy Host 추가 -> Domain Names: ide.example.com, *.example.com (또는 정규식 지원 시 분리)
+#   1) Proxy Host 추가 -> Details 탭 Domain Names: ide.example.com (단일 도메인만 입력)
+#      * 주의: Nginx 규격상 'ide-*.example.com' 같은 접두사 와일드카드는 동작하지 않으며,
+#              '*.example.com' 전체를 넣으면 타 프록시 호스트와 충돌할 수 있으므로 아래 5)의 정규식 사용 권장
 #   2) Scheme: http / Forward Hostname: <CAW_BIND_ADDR> / Forward Port: 8443
-#   3) Websockets Support: ON (필수 - 미체크 시 터미널 및 에이전트 스트리밍 끊김)
-#   4) SSL 탭: 와일드카드 인증서(*.example.com) 선택 + Force SSL + HTTP/2 Support 활성화
-#   5) Advanced 탭 Custom Nginx Configuration 에 아래 location 내부 헤더 설정 추가
+#      * NPM이 Docker 브리지 컨테이너로 구동 중이면 127.0.0.1 대신 호스트의 내부 사설 IP 지정
+#   3) Websockets Support: ON (필수 - 미체크 시 내장 터미널 및 에이전트 스트리밍 끊김)
+#   4) SSL 탭: 와일드카드 인증서(*.example.com) 선택 + Force SSL 활성화 (인증서는 타 호스트와 공유 가능)
+#   5) Advanced 탭 Custom Nginx Configuration 에 아래 1줄만 추가하여 포트 서브도메인(ide-<숫자>) 매칭:
+#        server_name ~^ide-[0-9]+\.example\.com$;
+#      * 주의: Advanced 탭에 'location /' 블록을 별도 선언하면 NPM 기본 프록시·WebSocket 블록이
+#              대체되므로 위 server_name 정규식 1줄만 기입할 것 (NPM은 server 블록 직속으로 병합함)
 # =============================================================================
 
 # [표준 Nginx 단독 구성 시 설정 예시 (/etc/nginx/conf.d/caw-ide.conf)]
