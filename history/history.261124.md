@@ -52,3 +52,19 @@
     - `./VERSION`, `./README.md`, `./bin/caw`, `./history/history.261124.md`
   - **내용**:
     1. 읽기 전용 마운트(`./cont-init.d:/custom-cont-init.d:ro`)로 연결되는 `cont-init.d/50-pwa-branding.sh`에 실행 권한(`chmod +x`, Git `100755`)이 누락되어 있던 점을 수정하여 s6-overlay 초기화 시 정상 실행되도록 보완.
+
+## (14:43 KST) - Antigravity
+
+- **[Refactor] 추적 Compose 파일 무수정 구조화 및 `git pull` 충돌 요인 제거 (`v0.1.18-261124`)**
+  - **작업자**: Antigravity
+  - **대응 버전**: `0.1.18-261124` (`./VERSION`)
+  - **대상**:
+    - `./compose.mux-socket.yml` (신규)
+    - `./docker-compose.yml`, `./compose.dood.yml`, `./compose.override.yml.example`
+    - `./.env.example`, `./.gitignore`
+    - `./lib/common.sh`
+    - `./VERSION`, `./bin/caw`, `./README.md`, `./AGENTS.md`, `./history/history.261124.md`
+  - **내용**:
+    1. 기존 `docker-compose.yml` 내 주석 처리되어 있던 멀티플렉서 소켓 직결 블록을 독립 모듈 `./compose.mux-socket.yml`로 분리하고, `lib/common.sh`(`caw_build_compose_args`)가 `CAW_SHARE_MUX_SOCKET=true` 시 자동 결합하며 `compose.override.yml`을 최후순위로 배치하도록 개선.
+    2. `./compose.dood.yml`의 호스트 Docker 바이너리·플러그인 경로를 `CAW_DOCKER_BIN`, `CAW_DOCKER_CLI_PLUGINS_DIR` 환경변수화하여 배포판별 경로 차이로 인한 수정 필요성 제거.
+    3. `./docker-compose.yml` 및 `./.env.example`에 `TZ`, `CAW_SUDO_PASSWORD_HASH`(`lib/common.sh`의 작은따옴표·`$` 검증 포함)를 추가하고, `./.gitignore`에 호스트 전용 로컬 훅(`cont-init.d/9*-local*.sh`) 예외 규칙과 `./compose.override.yml.example` 확장 예시(`environment`, `labels`, `extra_hosts`, `deploy`)를 보강.

@@ -8,5 +8,5 @@ services:
   code-server:
     volumes:
       - ${CAW_DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
-      - /usr/bin/docker:/usr/bin/docker:ro
-      - /usr/libexec/docker/cli-plugins:/usr/libexec/docker/cli-plugins:ro
+      - ${CAW_DOCKER_BIN:-/usr/bin/docker}:/usr/bin/docker:ro
+      - ${CAW_DOCKER_CLI_PLUGINS_DIR:-/usr/libexec/docker/cli-plugins}:/usr/libexec/docker/cli-plugins:ro

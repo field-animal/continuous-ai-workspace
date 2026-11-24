@@ -52,7 +52,7 @@
 - **무손실 전환(Brownfield)**: 기존 컨테이너 존재 -> `./scripts/install.sh --adopt` 적용 (호스트 `~/.gemini/antigravity-cli/conversations`에 기존 단독 CLI 대화가 있으면 `--migrate-cli-sessions` 추가 여부 확인)
 
 ### [3단계] `.env` 및 선택적 `compose.override.yml` 구성
-1. `cp .env.example .env && chmod 600 .env` 실행
+1. `cp .env.example .env && chmod 600 .env` 실행 (`docker-compose.yml` 등 Git 추적 파일은 직접 수정하지 말고 `.env`와 `compose.override.yml`만 사용)
 2. `PUID`, `PGID`, `HOST_USER`, `HOST_HOME`은 빈 값으로 유지(실행 계정 자동 치환)하고, 1단계에서 파악한 아래 항목을 기입합니다:
    - `CAW_BIND_ADDR`: 동일 호스트 루프백 프록시면 `127.0.0.1`, 브리지 컨테이너 프록시면 해당 호스트의 내부 사설 인터페이스 IP
    - `CAW_BASE_DOMAIN` 및 `CAW_PROXY_DOMAIN_TEMPLATE=ide-{{port}}.<도메인>`

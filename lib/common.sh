@@ -99,9 +99,9 @@ caw_load_env_file() {
             if [[ "${value}" =~ ^\"(.*)\"$ ]]; then
                 value="${BASH_REMATCH[1]}"
             fi
-            # 작은따옴표 없이 단일 $ 가 포함된 해시는 docker compose 직접 실행 시 =19... 로 훼손되므로 즉시 차단(Fail-Close)
-            if [[ "${key}" == "CAW_HASHED_PASSWORD" && "${value}" == *\$* && "${value}" != *\$\$* ]]; then
-                caw_err ".env 의 CAW_HASHED_PASSWORD 는 작은따옴표('...')로 감싸야 합니다 (예: CAW_HASHED_PASSWORD='\$argon2id\$...')."
+            # 작은따옴표 없이 단일 $ 가 포함된 해시는 docker compose 직접 실행 시 훼손되므로 즉시 차단(Fail-Close)
+            if [[ ( "${key}" == "CAW_HASHED_PASSWORD" || "${key}" == "CAW_SUDO_PASSWORD_HASH" ) && "${value}" == *\$* && "${value}" != *\$\$* ]]; then
+                caw_err ".env 의 ${key} 는 작은따옴표('...')로 감싸야 합니다 (예: ${key}='\$argon2id\$...')."
                 return 1
             fi
             # Docker Compose 규약과 동일하게 이중 달러($$) 이스케이프를 단일 달러($)로 복원
@@ -243,17 +243,22 @@ caw_check_no_active_locks() {
 }
 
 # 활성화된 옵션 및 로컬 오버라이드 파일 유무에 따라 docker compose 인자 배열을 조립하는 함수
+# 결합 순서: 코어(docker-compose.yml) -> 선택 모듈(dood, mux-socket) -> 호스트 오버라이드(최우선)
 caw_build_compose_args() {
     local stack_root="${1:?패키지 루트 경로 필요}"
     CAW_COMPOSE_ARGS=(-f "${stack_root}/docker-compose.yml")
+
+    if [[ "${CAW_ENABLE_DOOD:-false}" == "true" ]]; then
+        CAW_COMPOSE_ARGS+=(-f "${stack_root}/compose.dood.yml")
+    fi
+
+    if [[ "${CAW_SHARE_MUX_SOCKET:-false}" == "true" ]]; then
+        CAW_COMPOSE_ARGS+=(-f "${stack_root}/compose.mux-socket.yml")
+    fi
 
     if [[ -f "${stack_root}/compose.override.yml" ]]; then
         CAW_COMPOSE_ARGS+=(-f "${stack_root}/compose.override.yml")
     elif [[ -f "${stack_root}/docker-compose.override.yml" ]]; then
         CAW_COMPOSE_ARGS+=(-f "${stack_root}/docker-compose.override.yml")
-    fi
-
-    if [[ "${CAW_ENABLE_DOOD:-false}" == "true" ]]; then
-        CAW_COMPOSE_ARGS+=(-f "${stack_root}/compose.dood.yml")
     fi
 }

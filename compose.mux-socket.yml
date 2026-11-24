@@ -1,0 +1,22 @@
+# =============================================================================
+# CAW 선택 모듈 - 호스트 멀티플렉서 소켓 직결 (compose.mux-socket.yml)
+# 목적:
+#   CAW_SHARE_MUX_SOCKET=true 일 때만 install.sh / rollback.sh 에 의해 자동 결합됨
+# 주의:
+#   - 기본 보안 경계(호스트 SSH 2중 인증)를 우회하므로 폐쇄망 단일 사용자 환경에서만 사용할 것
+#   - 본 파일은 Git 추적 파일이므로 직접 수정하지 말 것 (추가 마운트는 compose.override.yml 사용)
+# =============================================================================
+
+services:
+  code-server:
+    environment:
+      - CAW_MUX_SOCKET_DIR=${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}
+      - ZELLIJ_SOCKET_DIR=${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}/zellij
+      - TMUX_TMPDIR=${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}/tmux
+    volumes:
+      - ${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}:${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}
+      - ${HOST_HOME:-${HOME}}/.cache/zellij:/config/.cache/zellij
+      - ${HOST_HOME:-${HOME}}/.cache/zellij:${HOST_HOME:-${HOME}}/.cache/zellij
+      - ${HOST_HOME:-${HOME}}/.config/zellij:/config/.config/zellij
+      - ${HOST_HOME:-${HOME}}/.config/tmux:/config/.config/tmux
+      - ./.caw-state/host-bin:/opt/caw/host-bin:ro

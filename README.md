@@ -1,6 +1,6 @@
 # CAW (Continuous AI Workspace)
 
-**버전:** `0.1.17-261124`
+**버전:** `0.1.18-261124`
 
 **CAW (`continuous-ai-workspace`)** 는 클라이언트 기기(노트북·데스크톱)의 전원 종료, 절전 진입, 또는 기기를 소지하지 않은 채 다른 장소의 새로운 머신으로 이동하더라도 **동일한 리눅스 호스트 위에서 AI 에이전트(Google Antigravity, Claude Code)와 웹 IDE(`code-server`), 터미널 멀티플렉서(`tmux` 또는 `zellij`) 세션을 끊김 없이 이어가기 위한 범용 인프라 구성 패키지**입니다.
 
@@ -32,7 +32,7 @@
    - `code-server`는 브라우저 탭 종료·절전 시 내장 셸 및 확장 호스트 자원을 정리합니다.
    - 동시에 호스트 멀티플렉서 소켓이나 `docker.sock`을 컨테이너에 직접 마운트하면 `code-server` 단일 비밀번호 침해 시 호스트 OS 권한까지 노출됩니다.
    - CAW는 **기본적으로 멀티플렉서 소켓과 `docker.sock`을 컨테이너에 마운트하지 않고(`CAW_SHARE_MUX_SOCKET=false`, `CAW_ENABLE_DOOD=false`)**, 웹 IDE 내장 터미널에서 **호스트로 `ssh` 로그인(2차 인증)한 뒤 호스트 순정 멀티플렉서(`tmux` 또는 `zellij`)를 구동**하는 보안 경계를 표준으로 채택합니다.
-   - 폐쇄망 단일 사용자 환경 등에서 SSH 없이 내장 터미널 소켓 직결을 원할 경우에만 `docker-compose.yml`의 주석 블록을 해제하고 `CAW_SHARE_MUX_SOCKET=true`로 선택 지정할 수 있습니다.
+   - 폐쇄망 단일 사용자 환경 등에서 SSH 없이 내장 터미널 소켓 직결을 원할 경우에만 `.env`에서 `CAW_SHARE_MUX_SOCKET=true`로 선택 지정하면 `compose.mux-socket.yml`이 자동 결합됩니다(`docker-compose.yml` 수정 불필요).
 2. **IDE 웹 패널 <-> 터미널 CLI 양방향 대화 저장소 단일화**
    - Antigravity의 내장 가져오기(`/resume` -> `Other`)는 `IDE -> CLI` 단방향만 지원합니다.
    - CAW의 `bin/agy` 래퍼는 `--app_data_dir=antigravity` 및 현재 작업 경로(`$PWD`) 기반 `--project` 자동 매칭을 주입하여, IDE 패널과 터미널 CLI가 동일한 SQLite 대화 저장소(`~/.gemini/antigravity`)를 양방향으로 직접 공유합니다.
@@ -50,14 +50,15 @@
 
 ```text
 continuous-ai-workspace/
-├── VERSION                          # 패키지 버전 (0.1.17-261124)
+├── VERSION                          # 패키지 버전 (0.1.18-261124)
 ├── AGENTS.md                        # 타 호스트 AI 에이전트 자동 실사·구축 표준 규약
 ├── FAQ.md                           # 아키텍처·와일드카드 서브도메인·보안 경계 FAQ
 ├── .env.example                     # 서버별 환경변수 템플릿 (사용자·경로·멀티플렉서 중립)
 ├── .gitignore                       # 시크릿, 로컬 오버라이드, 상용 바이너리, 백업 커밋 차단
-├── docker-compose.yml               # 코어 구성 (기본 SSH 2중 인증 경계, 소켓 직결은 주석 분리)
-├── compose.override.yml.example     # [선택 템플릿] 복수 워크스페이스 및 외부 네트워크 로컬 확장
-├── compose.dood.yml                 # [선택 모듈] 호스트 Docker(DooD) 연동
+├── docker-compose.yml               # 코어 구성 (기본 SSH 2중 인증 경계 - 직접 수정 금지)
+├── compose.override.yml.example     # [선택 템플릿] 복수 워크스페이스·네트워크·환경변수 로컬 확장
+├── compose.dood.yml                 # [선택 모듈] 호스트 Docker(DooD) 연동 (CAW_ENABLE_DOOD=true 자동 결합)
+├── compose.mux-socket.yml           # [선택 모듈] 멀티플렉서 소켓 직결 (CAW_SHARE_MUX_SOCKET=true 자동 결합)
 ├── assets/
 │   ├── .gitkeep                     # [선택] 서버별 커스텀 PWA 아이콘 저장 디렉토리 (.gitignore 보호)
 │   └── caw-icon.png                 # 기본 제공 CAW 역동적 까마귀 엠블럼 아이콘 (투명 배경 512x512 PNG)
@@ -108,8 +109,9 @@ chmod 600 .env
 # (PUID, PGID, HOST_USER, HOST_HOME, CAW_WORKSPACE_DIR 은 비워두면 현재 계정 기준으로 자동 설정됨)
 # ([선택] PWA 앱 이름·아이콘 변경 시 CAW_PWA_APPNAME, CAW_PWA_ICON 지정 및 ./assets/ 에 아이콘 파일 배치)
 
-# [선택] 복수의 추가 워크스페이스 디렉토리 마운트가 필요한 경우:
-# cp compose.override.yml.example compose.override.yml 후 볼륨 경로 수정
+# [선택] 복수의 추가 워크스페이스·외부 네트워크·호스트별 환경변수 확장이 필요한 경우:
+# (git pull 시 충돌 방지를 위해 docker-compose.yml 대신 compose.override.yml 만 수정)
+# cp compose.override.yml.example compose.override.yml 후 필요한 항목 수정
 
 # 1) 변경 전 사전 검증 (파일/컨테이너 무변경)
 ./scripts/install.sh --dry-run

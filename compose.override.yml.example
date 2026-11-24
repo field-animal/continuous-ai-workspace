@@ -1,11 +1,12 @@
 # =============================================================================
 # CAW 로컬 확장 오버라이드 템플릿 (compose.override.yml.example)
 # 사용법:
-#   복수의 보조 워크스페이스 마운트나 외부 프록시 Docker 네트워크 연결이 필요한 호스트에서만
-#   'cp compose.override.yml.example compose.override.yml' 실행 후 경로를 수정하세요.
+#   복수의 보조 워크스페이스 마운트, 외부 프록시 Docker 네트워크, 서버별 환경변수·레이블 확장이
+#   필요한 호스트에서만 'cp compose.override.yml.example compose.override.yml' 실행 후 수정하세요.
 # 특징:
-#   - Docker Compose 표준 규약에 따라 별도 -f 옵션 없이도 자동 병합되며, install.sh 실행 시에도 자동 포함됩니다.
-#   - compose.override.yml 파일은 .gitignore 에 등록되어 Git 커밋에서 자동 제외됩니다.
+#   - Docker Compose 표준 규약에 따라 별도 -f 옵션 없이도 자동 병합되며, install.sh 실행 시에도 최후순위로 자동 결합됩니다.
+#   - compose.override.yml 파일은 .gitignore 에 등록되어 Git 커밋·pull 충돌에서 자동 보호됩니다.
+#   - 추적 파일인 docker-compose.yml 은 직접 수정하지 말고 모든 호스트별 커스텀을 본 파일에 작성하세요.
 # =============================================================================
 
 services:
@@ -16,6 +17,23 @@ services:
       - /opt/infra:/opt/infra
       # 읽기 전용 참조 디렉토리 마운트 예시
       # - /srv/shared-docs:/srv/shared-docs:ro
+
+    # 호스트별 추가 환경변수 예시 (예: 기업 프록시, 추가 로케일, 커스텀 플래그)
+    # environment:
+    #   - HTTP_PROXY=http://proxy.internal:3128
+    #   - HTTPS_PROXY=http://proxy.internal:3128
+
+    # 호스트별 리버스 프록시 레이블 예시 (Traefik Docker 프로바이더 직접 연동 시)
+    # labels:
+    #   - "traefik.enable=true"
+
+    # 호스트별 추가 호스트 매핑 또는 리소스 제한 예시
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 8G
 
     # 기존 리버스 프록시(Traefik, NPM 등)의 외부 Docker 브리지 네트워크에 직접 연결할 경우 예시
     # networks:

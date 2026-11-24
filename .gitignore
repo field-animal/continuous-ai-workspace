@@ -30,3 +30,6 @@ bin/claude.real
 assets/*
 !assets/.gitkeep
 !assets/caw-icon.png
+
+# 호스트별 커스텀 초기화 훅 (git pull 충돌 방지용 로컬 전용 스크립트)
+cont-init.d/9*-local*.sh
