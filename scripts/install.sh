@@ -103,6 +103,21 @@ caw_verify_secrets
 caw_resolve_runtime_defaults
 caw_info "런타임 매핑 기준: USER=${HOST_USER}(${PUID}:${PGID}), HOME=${HOST_HOME}, WORKSPACE=${CAW_WORKSPACE_DIR}"
 
+if [[ -n "${CAW_PWA_ICON:-}" && "${CAW_PWA_ICON}" != https://* && "${CAW_PWA_ICON}" != /* ]]; then
+    pwa_rel="${CAW_PWA_ICON#./}"
+    pwa_rel="${pwa_rel%/}"
+    if [[ "${pwa_rel}" == "assets" || "${pwa_rel}" == "." ]]; then
+        pwa_rel=""
+    else
+        pwa_rel="${pwa_rel#assets/}"
+    fi
+    [[ "${pwa_rel}" == "." ]] && pwa_rel=""
+    pwa_check_path="${STACK_ROOT}/assets${pwa_rel:+/${pwa_rel}}"
+    if [[ ! -e "${pwa_check_path}" ]]; then
+        caw_warn "지정된 CAW_PWA_ICON(${CAW_PWA_ICON})을 '${pwa_check_path}'에서 찾을 수 없습니다 (기동 시 기본 아이콘 유지)."
+    fi
+fi
+
 caw_build_compose_args "${STACK_ROOT}"
 caw_info "적용 대상 Compose 구성: ${CAW_COMPOSE_ARGS[*]}"
 
@@ -222,6 +237,7 @@ REQUIRED_DIRS=(
     "${HOST_HOME}/.gemini/antigravity-cli"
     "${HOST_HOME}/.local/bin"
     "${HOST_BIN_CACHE}"
+    "${STACK_ROOT}/assets"
 )
 
 if [[ "${CAW_SHARE_MUX_SOCKET}" == "true" ]]; then

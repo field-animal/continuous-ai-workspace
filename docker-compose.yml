@@ -30,6 +30,9 @@ services:
       - CAW_HOST_HOME=${HOST_HOME:-${HOME}}
       - CAW_AUTO_INSTALL_EXTENSIONS=${CAW_AUTO_INSTALL_EXTENSIONS:-true}
       - CAW_ENABLE_DOOD=${CAW_ENABLE_DOOD:-false}
+      # PWA 앱 이름 및 커스텀 아이콘 브랜딩 설정 (미선언 시 앱 이름 기본 CAW, 아이콘 미설정 시 code-server 기본 유지)
+      - PWA_APPNAME=${CAW_PWA_APPNAME:-CAW}
+      - CAW_PWA_ICON=${CAW_PWA_ICON:-}
       # [선택: 멀티플렉서 소켓 직결 모드용 환경변수 - 기본 비활성(호스트 SSH 2중 인증 경계 유지)]
       # 주의: 활성화 시 호스트 SSH 인증 없이 컨테이너에서 호스트 멀티플렉서 세션 진입이 가능해짐
       # - CAW_MUX_SOCKET_DIR=${CAW_MUX_SOCKET_DIR:-${HOST_HOME:-${HOME}}/.cache/caw/mux}
@@ -74,6 +77,9 @@ services:
 
       # 7. 독립 기동 초기화 모듈 디렉토리 (파일 삭제 시 해당 기능만 무영향 제외 가능)
       - ./cont-init.d:/custom-cont-init.d:ro
+
+      # 8. 커스텀 PWA 아이콘 등 정적 자산 디렉토리 읽기 전용 매핑
+      - ./assets:/opt/caw/assets:ro
     ports:
       # 보안 기본값: 127.0.0.1 바인딩으로 외부 무인증 노출 차단
       - "${CAW_BIND_ADDR:-127.0.0.1}:${CAW_PORT:-8443}:8443"

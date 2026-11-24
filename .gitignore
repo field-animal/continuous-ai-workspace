@@ -25,3 +25,8 @@ bin/claude.real
 .caw-state/
 *.bak
 *.backup
+
+# 서버별 커스텀 PWA 아이콘 자산 (기본 CAW 아이콘 및 .gitkeep 만 저장소 유지)
+assets/*
+!assets/.gitkeep
+!assets/caw-icon.png

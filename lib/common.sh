@@ -151,9 +151,43 @@ caw_resolve_runtime_defaults() {
 
     CAW_SESSION_NAME="${CAW_SESSION_NAME:-caw}"
     CAW_CONTAINER_NAME="${CAW_CONTAINER_NAME:-code-server}"
+    CAW_PWA_APPNAME="${CAW_PWA_APPNAME:-CAW}"
+    CAW_PWA_ICON="${CAW_PWA_ICON:-}"
+
+    if [[ "${CAW_PWA_APPNAME}" =~ [[:cntrl:]] ]]; then
+        caw_err "CAW_PWA_APPNAME 에 허용되지 않은 제어문자가 포함되어 있습니다."
+        return 1
+    fi
+
+    if [[ -n "${CAW_PWA_ICON}" ]]; then
+        if [[ "${CAW_PWA_ICON}" =~ [[:cntrl:]] ]]; then
+            caw_err "CAW_PWA_ICON 에 허용되지 않은 제어문자가 포함되어 있습니다."
+            return 1
+        fi
+        if [[ "${CAW_PWA_ICON}" == https://* ]]; then
+            if [[ "${CAW_PWA_ICON}" =~ [[:space:]] ]]; then
+                caw_err "CAW_PWA_ICON URL 에는 공백을 포함할 수 없습니다: ${CAW_PWA_ICON}"
+                return 1
+            fi
+        elif [[ "${CAW_PWA_ICON}" == *://* ]]; then
+            caw_err "보안상 원격 CAW_PWA_ICON 은 https:// 스킴만 허용됩니다: ${CAW_PWA_ICON}"
+            return 1
+        elif [[ "${CAW_PWA_ICON}" == /* ]]; then
+            CAW_PWA_ICON="$(caw_validate_path "${CAW_PWA_ICON}")"
+            if [[ "${CAW_PWA_ICON}" != "/opt/caw/assets"* && "${CAW_PWA_ICON}" != "/config"* && "${CAW_PWA_ICON}" != "${CAW_WORKSPACE_DIR}"* ]]; then
+                caw_warn "컨테이너 내부 절대경로 CAW_PWA_ICON(${CAW_PWA_ICON})이 기본 마운트(/opt/caw/assets, /config, 워크스페이스) 외부입니다. ./assets/ 배치를 권장합니다."
+            fi
+        else
+            if [[ "${CAW_PWA_ICON}" =~ (^|/)\.\.(/|$) ]]; then
+                caw_err "CAW_PWA_ICON 상대경로에 상위 디렉토리 이동(..)을 포함할 수 없습니다: ${CAW_PWA_ICON}"
+                return 1
+            fi
+        fi
+    fi
 
     export PUID PGID HOST_USER HOST_HOME CAW_CONFIG_DIR CAW_WORKSPACE_DIR \
-           CAW_MUX_SOCKET_DIR CAW_MULTIPLEXER CAW_SHARE_MUX_SOCKET CAW_SESSION_NAME CAW_CONTAINER_NAME
+           CAW_MUX_SOCKET_DIR CAW_MULTIPLEXER CAW_SHARE_MUX_SOCKET CAW_SESSION_NAME CAW_CONTAINER_NAME \
+           CAW_PWA_APPNAME CAW_PWA_ICON
 }
 
 # 인증 시크릿 유효성 검증 (기본 예시값이나 빈 비밀번호·손상된 해시 기동 원천 차단 - Fail Close)

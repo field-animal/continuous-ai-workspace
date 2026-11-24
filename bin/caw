@@ -26,7 +26,7 @@ DEFAULT_SESSION="${CAW_SESSION_NAME:-caw}"
 SHARE_SOCKET="${CAW_SHARE_MUX_SOCKET:-false}"
 MUX_ROOT="${CAW_MUX_SOCKET_DIR:-${HOST_HOME_DIR}/.cache/caw/mux}"
 
-CAW_VERSION="0.1.13-261120"
+CAW_VERSION="0.1.16-261124"
 if [[ -f "${STACK_ROOT}/VERSION" ]]; then
     CAW_VERSION="$(tr -d '[:space:]' < "${STACK_ROOT}/VERSION")"
 fi
@@ -300,6 +300,35 @@ cmd_doctor() {
         else
             printf '  [FAIL] systemd Linger 비활성(%s) - SSH 로그아웃 시 멀티플렉서 종료 위험 (`sudo loginctl enable-linger %s` 필요)\n' "${linger_state}" "${USER:-$(id -un)}"
             failures=$((failures + 1))
+        fi
+    fi
+
+    printf '  [PASS] PWA 앱 이름 설정: %s\n' "${CAW_PWA_APPNAME:-CAW}"
+    local pwa_icon="${CAW_PWA_ICON:-}"
+    if [[ -z "${pwa_icon}" ]]; then
+        printf '  [PASS] PWA 아이콘: 기본 code-server 아이콘 사용 중\n'
+    elif [[ "${pwa_icon}" == https://* ]]; then
+        printf '  [PASS] PWA 아이콘(HTTPS URL): %s\n' "${pwa_icon}"
+    elif [[ "${pwa_icon}" == /* ]]; then
+        if [[ -e "${pwa_icon}" || -f "/.dockerenv" ]]; then
+            printf '  [PASS] PWA 아이콘(컨테이너 경로): %s\n' "${pwa_icon}"
+        else
+            printf '  [PASS] PWA 아이콘(컨테이너 내부 경로 지정됨): %s\n' "${pwa_icon}"
+        fi
+    else
+        local pwa_rel="${pwa_icon#./}"
+        pwa_rel="${pwa_rel%/}"
+        if [[ "${pwa_rel}" == "assets" || "${pwa_rel}" == "." ]]; then
+            pwa_rel=""
+        else
+            pwa_rel="${pwa_rel#assets/}"
+        fi
+        [[ "${pwa_rel}" == "." ]] && pwa_rel=""
+        local pwa_check_path="${STACK_ROOT}/assets${pwa_rel:+/${pwa_rel}}"
+        if [[ -e "${pwa_check_path}" ]]; then
+            printf '  [PASS] PWA 아이콘(assets): %s\n' "${pwa_check_path}"
+        else
+            printf '  [WARN] 지정된 PWA 아이콘을 찾을 수 없음: %s\n' "${pwa_check_path}"
         fi
     fi
 

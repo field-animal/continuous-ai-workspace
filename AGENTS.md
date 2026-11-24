@@ -41,7 +41,7 @@
      - `/config` 마운트 원본 호스트 경로 (`CAW_CONFIG_DIR` 승계 대상)
      - `/config/.gemini`가 호스트 홈(`~/.gemini`)으로 분리 마운트되어 있는지 여부 (미분리 상태로 `/config/.gemini` 내부에만 데이터가 있으면 덮어 마운트 시 가려지므로 사전 복사 필요)
      - 마운트된 워크스페이스 경로 목록 (1개인지, 2개 이상 다중 경로인지 확인)
-     - 기존 `PROXY_DOMAIN`, `CODE_SERVER_COOKIE_SUFFIX`, `AGY_ALLOWED_DOMAINS` 설정값
+     - 기존 `PROXY_DOMAIN`, `CODE_SERVER_COOKIE_SUFFIX`, `AGY_ALLOWED_DOMAINS`, `PWA_APPNAME` 설정값
 3. **리버스 프록시 연동 구조 점검**
    - 프록시(Traefik / NPM / Nginx)가 호스트 루프백(`127.0.0.1:8443`)으로 전달하는지, 별도 Docker 브리지에서 호스트 사설 IP(예: `192.168.x.x:8443`)로 전달하는지 확인 (`127.0.0.1` 불일치 시 `502 Bad Gateway` 발생 방지)
    - 와일드카드 TLS(`*.<도메인>`) 및 포트 프록시(`ide-<포트>.<도메인>`) 구간의 `X-Frame-Options` 제외 조건 충족 여부 확인 (단, 경로 분기 `/ide/` 전용 서버에서도 Antigravity 사이드바 GUI 패널만 제외하면 나머지 기능은 정상 구축 가능 - `FAQ.md` 참조)

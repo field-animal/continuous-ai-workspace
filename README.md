@@ -1,6 +1,6 @@
 # CAW (Continuous AI Workspace)
 
-**버전:** `0.1.13-261120`
+**버전:** `0.1.16-261124`
 
 **CAW (`continuous-ai-workspace`)** 는 클라이언트 기기(노트북·데스크톱)의 전원 종료, 절전 진입, 또는 기기를 소지하지 않은 채 다른 장소의 새로운 머신으로 이동하더라도 **동일한 리눅스 호스트 위에서 AI 에이전트(Google Antigravity, Claude Code)와 웹 IDE(`code-server`), 터미널 멀티플렉서(`tmux` 또는 `zellij`) 세션을 끊김 없이 이어가기 위한 범용 인프라 구성 패키지**입니다.
 
@@ -50,7 +50,7 @@
 
 ```text
 continuous-ai-workspace/
-├── VERSION                          # 패키지 버전 (0.1.13-261120)
+├── VERSION                          # 패키지 버전 (0.1.16-261124)
 ├── AGENTS.md                        # 타 호스트 AI 에이전트 자동 실사·구축 표준 규약
 ├── FAQ.md                           # 아키텍처·와일드카드 서브도메인·보안 경계 FAQ
 ├── .env.example                     # 서버별 환경변수 템플릿 (사용자·경로·멀티플렉서 중립)
@@ -58,6 +58,9 @@ continuous-ai-workspace/
 ├── docker-compose.yml               # 코어 구성 (기본 SSH 2중 인증 경계, 소켓 직결은 주석 분리)
 ├── compose.override.yml.example     # [선택 템플릿] 복수 워크스페이스 및 외부 네트워크 로컬 확장
 ├── compose.dood.yml                 # [선택 모듈] 호스트 Docker(DooD) 연동
+├── assets/
+│   ├── .gitkeep                     # [선택] 서버별 커스텀 PWA 아이콘 저장 디렉토리 (.gitignore 보호)
+│   └── caw-icon.png                 # 기본 제공 CAW 역동적 까마귀 엠블럼 아이콘 (투명 배경 512x512 PNG)
 ├── history/                         # 날짜·버전별 패키지 변경 이력 (상대경로 기준)
 ├── lib/
 │   ├── common.sh                    # eval 없는 .env 파서, 자동 기본값 치환, 경로·시크릿·잠금 검증
@@ -69,7 +72,8 @@ continuous-ai-workspace/
 │   ├── 10-docker-gid.sh             # DooD 활성화 시 소켓 GID 동기화
 │   ├── 20-extensions.sh             # 공식 갤러리 확장 멱등 자동 설치 (오프라인 방어 포함)
 │   ├── 30-agent-storage.sh          # Antigravity 인증·설정 심볼릭 링크 보장
-│   └── 40-multiplexer.sh            # [선택] CAW_SHARE_MUX_SOCKET=true 일 때만 소켓 직결 초기화
+│   ├── 40-multiplexer.sh            # [선택] CAW_SHARE_MUX_SOCKET=true 일 때만 소켓 직결 초기화
+│   └── 50-pwa-branding.sh           # [선택] CAW_PWA_APPNAME·CAW_PWA_ICON 기반 PWA 앱 이름·아이콘 동기화
 ├── bin/
 │   ├── caw                          # 보조 관리 CLI (status, unlock, clean, doctor, attach)
 │   ├── agy                          # Antigravity 양방향 저장소 공유 래퍼
@@ -102,6 +106,7 @@ cp .env.example .env
 chmod 600 .env
 # .env 파일 내 CAW_BASE_DOMAIN, CAW_HASHED_PASSWORD(또는 CAW_PASSWORD) 등 필수 항목만 기입
 # (PUID, PGID, HOST_USER, HOST_HOME, CAW_WORKSPACE_DIR 은 비워두면 현재 계정 기준으로 자동 설정됨)
+# ([선택] PWA 앱 이름·아이콘 변경 시 CAW_PWA_APPNAME, CAW_PWA_ICON 지정 및 ./assets/ 에 아이콘 파일 배치)
 
 # [선택] 복수의 추가 워크스페이스 디렉토리 마운트가 필요한 경우:
 # cp compose.override.yml.example compose.override.yml 후 볼륨 경로 수정
