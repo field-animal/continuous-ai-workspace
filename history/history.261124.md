@@ -41,3 +41,14 @@
     - `./VERSION`, `./README.md`, `./bin/caw`, `./history/history.261124.md`
   - **내용**:
     1. CAW 기본 아이콘 시안을 배경색 없는 역동적 전진형 까마귀 머리 엠블럼(2-R)으로 확정하고 투명 배경 `512x512` PNG 규격(`./assets/caw-icon.png`) 기준으로 문서·버전(`v0.1.16-261124`)을 갱신.
+
+## (14:30 KST) - Antigravity
+
+- **[Fix] `cont-init.d/50-pwa-branding.sh` 실행 권한(`100755`) 보완 (`v0.1.17-261124`)**
+  - **작업자**: Antigravity
+  - **대응 버전**: `0.1.17-261124` (`./VERSION`)
+  - **대상**:
+    - `./cont-init.d/50-pwa-branding.sh` (파일 모드 `100644` -> `100755`)
+    - `./VERSION`, `./README.md`, `./bin/caw`, `./history/history.261124.md`
+  - **내용**:
+    1. 읽기 전용 마운트(`./cont-init.d:/custom-cont-init.d:ro`)로 연결되는 `cont-init.d/50-pwa-branding.sh`에 실행 권한(`chmod +x`, Git `100755`)이 누락되어 있던 점을 수정하여 s6-overlay 초기화 시 정상 실행되도록 보완.
